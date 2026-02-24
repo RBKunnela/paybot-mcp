@@ -1,6 +1,6 @@
 # @paybot/mcp
 
-MCP (Model Context Protocol) server for [PayBot](https://github.com/RBKunnela/paybot-sdk) — Connect AI agents to PayBot payment infrastructure.
+MCP (Model Context Protocol) server for [PayBot](https://paybotcore.com) — Connect AI agents to PayBot payment infrastructure.
 
 ## Installation
 
@@ -23,7 +23,7 @@ Add to `claude_desktop_config.json`:
       "command": "npx",
       "args": ["@paybot/mcp"],
       "env": {
-        "PAYBOT_BASE_URL": "https://api.paybot.dev",
+        "PAYBOT_BASE_URL": "https://api.paybotcore.com",
         "PAYBOT_API_KEY": "your-api-key"
       }
     }
