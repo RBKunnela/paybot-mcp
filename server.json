@@ -1,0 +1,14 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.RBKunnela/paybot-mcp",
+  "description": "MCP server enabling AI agents to make autonomous x402 payments in USDC on Base. Provides tools for payment execution, balance checking, transaction history, and bot registration with configurable spending limits.",
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "paybot-mcp",
+      "version": "0.2.0",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

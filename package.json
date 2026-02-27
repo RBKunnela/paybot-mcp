@@ -53,6 +53,7 @@
     "type": "git",
     "url": "https://github.com/RBKunnela/paybot-mcp.git"
   },
+  "mcpName": "io.github.RBKunnela/paybot-mcp",
   "homepage": "https://paybotcore.com",
   "bugs": {
     "url": "https://github.com/RBKunnela/paybot-mcp/issues"
