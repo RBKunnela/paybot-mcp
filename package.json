@@ -1,6 +1,6 @@
 {
   "name": "paybot-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "PayBot MCP Server - Payment tools for AI agents via Model Context Protocol",
   "type": "module",
   "main": "dist/index.js",
