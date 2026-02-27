@@ -14,7 +14,7 @@
  *         "args": ["paybot-mcp"],
  *         "env": {
  *           "PAYBOT_API_KEY": "pb_...",
- *           "PAYBOT_FACILITATOR_URL": "http://localhost:3000",
+ *           "PAYBOT_FACILITATOR_URL": "https://api.paybotcore.com",
  *           "PAYBOT_BOT_ID": "my-agent"
  *         }
  *       }

@@ -29,7 +29,7 @@ export function createMcpServer(): McpServer {
     }
     return new PayBotClient({
       apiKey,
-      facilitatorUrl: process.env.PAYBOT_FACILITATOR_URL ?? process.env.X402_FACILITATOR_URL ?? 'http://localhost:3000',
+      facilitatorUrl: process.env.PAYBOT_FACILITATOR_URL ?? process.env.X402_FACILITATOR_URL ?? 'https://api.paybotcore.com',
       botId: botId ?? process.env.PAYBOT_BOT_ID ?? 'mcp-agent',
       walletPrivateKey: process.env.PAYBOT_WALLET_KEY,
     });
