@@ -1,18 +1,31 @@
 {
-  "name": "@paybot/mcp",
+  "name": "paybot-mcp",
   "version": "0.1.0",
-  "description": "MCP server for PayBot — Connect AI agents to PayBot payment infrastructure",
+  "description": "PayBot MCP Server - Payment tools for AI agents via Model Context Protocol",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "paybot-mcp": "./dist/index.js"
   },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server.js",
+      "types": "./dist/server.d.ts"
+    }
+  },
   "files": [
-    "dist",
+    "dist/",
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
@@ -30,10 +43,12 @@
     "model-context-protocol",
     "ai-agent",
     "payments",
-    "usdc"
+    "usdc",
+    "x402",
+    "bot-payments"
   ],
   "author": "RBKunnela",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/RBKunnela/paybot-mcp.git"
@@ -43,20 +58,29 @@
     "url": "https://github.com/RBKunnela/paybot-mcp/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "paybot-sdk": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "paybot-sdk": {
+      "optional": false
+    }
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.56.0",
+    "paybot-sdk": "file:../paybot-sdk",
     "prettier": "^3.1.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.0",
-    "zod": "^4.3.6"
   }
 }

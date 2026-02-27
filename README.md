@@ -1,18 +1,14 @@
-# @paybot/mcp
+# paybot-mcp
 
-MCP (Model Context Protocol) server for [PayBot](https://paybotcore.com) — Connect AI agents to PayBot payment infrastructure.
+MCP server for [PayBot](https://paybotcore.com) — payment tools for AI agents via the Model Context Protocol.
 
-## Installation
+## Install
 
 ```bash
-npm install -g @paybot/mcp
+npm install paybot-mcp paybot-sdk
 ```
 
-Or add to your MCP client config directly.
-
-## Configuration
-
-### Claude Desktop
+## Usage with Claude Desktop
 
 Add to `claude_desktop_config.json`:
 
@@ -21,63 +17,93 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "paybot": {
       "command": "npx",
-      "args": ["@paybot/mcp"],
+      "args": ["paybot-mcp"],
       "env": {
-        "PAYBOT_BASE_URL": "https://api.paybotcore.com",
-        "PAYBOT_API_KEY": "your-api-key"
+        "PAYBOT_API_KEY": "pb_...",
+        "PAYBOT_FACILITATOR_URL": "https://facilitator.paybot.dev",
+        "PAYBOT_BOT_ID": "my-agent"
       }
     }
   }
 }
 ```
 
-### Environment Variables
+## Usage with Claude Code
+
+```json
+{
+  "mcpServers": {
+    "paybot": {
+      "command": "npx",
+      "args": ["paybot-mcp"],
+      "env": {
+        "PAYBOT_API_KEY": "pb_...",
+        "PAYBOT_BOT_ID": "my-agent"
+      }
+    }
+  }
+}
+```
+
+## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PAYBOT_BASE_URL` | PayBot API URL | `http://localhost:3000` |
-| `PAYBOT_API_KEY` | Your API key | (required) |
+| `PAYBOT_API_KEY` | PayBot API key | (required) |
+| `PAYBOT_FACILITATOR_URL` | Facilitator server URL | `http://localhost:3000` |
+| `PAYBOT_BOT_ID` | Default bot identifier | `mcp-agent` |
+| `PAYBOT_WALLET_KEY` | Wallet private key for real payments | (optional) |
 
 ## Available Tools
 
 | Tool | Description |
 |------|-------------|
-| `pay` | Submit a USDC payment through PayBot |
-| `get_payment` | Get the status of a payment by ID |
-| `list_payments` | List recent payments with pagination |
-| `health` | Check if the PayBot server is reachable |
+| `paybot_pay` | Make a USDC payment for an API, service, or resource |
+| `paybot_balance` | Check trust level, spending limits, and remaining budget |
+| `paybot_history` | View recent payment history and audit events |
+| `paybot_register` | Register a new bot with the facilitator |
 
-### `pay`
-
-```
-to: string        — Recipient wallet address (0x...)
-amount: string     — Amount in USDC (e.g. "10.00")
-memo?: string      — Payment description
-idempotencyKey?: string — Prevent duplicate payments
-```
-
-### `get_payment`
+### paybot_pay
 
 ```
-paymentId: string — The payment ID to look up
+amount: string     - Amount in USD (e.g., "0.05")
+recipient: string  - Recipient wallet address (0x...)
+resource: string   - URL or description of what you're paying for
+botId?: string     - Bot identifier (defaults to env)
+network?: string   - Network CAIP-2 ID (default: Base Sepolia)
 ```
 
-### `list_payments`
+### paybot_balance
 
 ```
-limit?: number  — Max results to return
-offset?: number — Pagination offset
+botId?: string - Bot identifier (defaults to env)
 ```
 
-## Development
+### paybot_history
 
-```bash
-npm install
-npm run dev      # Watch mode with hot reload
-npm run build    # Compile TypeScript
-npm start        # Run compiled server
+```
+botId?: string  - Bot identifier (defaults to env)
+limit?: number  - Max events to return (default: 10)
+```
+
+### paybot_register
+
+```
+botId: string        - Unique bot identifier
+trustLevel?: number  - Initial trust level 0-5 (default: 1)
+```
+
+## Programmatic Usage
+
+```typescript
+import { createMcpServer } from 'paybot-mcp/server';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+
+const server = createMcpServer();
+const transport = new StdioServerTransport();
+await server.connect(transport);
 ```
 
 ## License
 
-MIT
+[Apache 2.0](LICENSE)
