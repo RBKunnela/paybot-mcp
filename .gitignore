@@ -5,3 +5,8 @@ dist/
 .env.*
 coverage/
 .DS_Store
+
+# Internal sprint planning — paybot-mcp is Apache-2.0 public; story files
+# may reference operator-private workspace slugs and must not ship.
+docs/stories/
+
