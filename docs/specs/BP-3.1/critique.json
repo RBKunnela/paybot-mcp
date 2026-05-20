@@ -1,0 +1,111 @@
+{
+  "story_id": "BP-3.1",
+  "spec_path": "D:\\1.GITHUB\\paybot-mcp\\docs\\specs\\BP-3.1\\spec.md",
+  "critique_date": "2026-05-20",
+  "critic": "AIOX QA (Quinn)",
+  "spec_word_count": 3793,
+  "complexity_class": "COMPLEX-17",
+
+  "scores": {
+    "clarity": 4,
+    "completeness": 4,
+    "testability": 3,
+    "risk_coverage": 4,
+    "constitutional_compliance": 4,
+    "average": 3.8
+  },
+
+  "dimension_notes": {
+    "clarity": "STRENGTHS: ASCII diagrams for both architecture and 6-state machine are unambiguous. Envelope payload is concrete with real values. Error model table is exhaustive. WEAKNESSES: §5.3 paragraph on v0.4 multi-sig migration is dense and conditional ('either swap... or keep compact'). §5.5 cross-chain anchoring would benefit from a small diagram showing both chains and the request_id reference. New @dev would still ask: 'where is the HTTP sidecar specified — port, auth, lifecycle?'",
+    "completeness": "STRENGTHS: 12 FRs + 11 NFRs + 9 CONs cover all requirements.json entries; bypass, replay, dynamic-linking, retention, fail-closed all addressed. Three channels each have an interface contract. WEAKNESSES: (a) CON-3 ('MUST work over MCP stdio transport, cannot assume HTTP server') is violated by webhook/http-poll channels needing an HTTP sidecar — spec does NOT carve this out as a CON-3 amendment. (b) FR-14 paybot_hitl_approve adds an MCP tool surface that can approve payments; no AuthZ section beyond env flag. (c) NFR-1 (p95<50ms) is measured 'local SQLite' but interaction with NFR-10 (100 concurrent + WAL) is not specified.",
+    "testability": "STRENGTHS: §11 has six test categories with concrete counts (1000-envelope fuzz, 100-concurrent stress, 50% chaos). Success criteria are measurable. WEAKNESSES: NO file paths (AIDR-009 §quality-foundation expects them — e.g., `tests/unit/hitl/envelope.test.ts`). NO coverage target stated (quality-foundation mandates ≥80% on changed files; spec does not commit). NO test for FR-14 access-control negative cases (non-Renata operator-id attempting tool approval). NO test for CON-3 stdio-only deployment (server boots and works with HTTP sidecar disabled). Property-based test framework not named (fast-check? jsverify?).",
+    "risk_coverage": "STRENGTHS: 5 risks identified with sev/likely/mitigation. R4 (two-chain demand) is honestly flagged. Deferred OQs each have a 'why safe' justification. WEAKNESSES: R4 mitigation is rhetorical ('documented as defense-in-depth') — there is NO evidence that a Nordic bank actually accepts two chains over one Merkle tree; this is the PM's #1 self-flag and the spec does not present a falsifiable test (e.g., 'shown to N-bank-IT reviewer in advance, response recorded'). R5 webhook UI fallback to Slack is sound but contradicts N2 (no UI build) without acknowledging the contradiction. The OQ-D1 deferred decision (compact JWS vs JWS-JSON-Serialization for v0.4) is a WIRE-FORMAT decision being kicked to v0.4 — this is the PM's #3 self-flag and the spec's 'no wire break' claim is contingent on option B winning; should be stated as such.",
+    "constitutional_compliance": "STRENGTHS: Every FR/NFR/CON has a Source column traceable to requirements.json, architect §2, research key-findings, or marked NEW with rationale. Closing paragraph explicitly invokes Article IV. The 5 'operator decisions 2026-05-20' anchor NEW items. WEAKNESSES: 'operator decision 2026-05-20' is invoked 5+ times without a pointer to a decision record / handoff artifact / memory entry — this is a soft Article IV violation (a source must be traceable, not just named). FR-10 in requirements.json says 'integrate with paybot-core audit hash-chain (src/audit/hash-chain.ts)' and the spec PIVOTS to 'MCP maintains its own chain with cross-chain anchor at executed' — this is a real divergence from requirements; spec marks it NEW with CON-2/CON-5 rationale, which is defensible, but the requirements.json text was concrete and the spec's reframing should be acknowledged as a deliberate amendment to requirements (not just NEW)."
+  },
+
+  "verdict": "NEEDS_REVISION",
+
+  "required_changes": [
+    {
+      "severity": "must-fix",
+      "section": "§7 Constraints (CON-3 amendment) + §5.1 / §5.4",
+      "issue": "CON-3 from requirements.json mandates 'MUST work over MCP stdio transport. Cannot assume HTTP server is running on the MCP side; stdio notifier MUST function with only stdin/stdout available.' Spec ships webhook + http-poll channels that REQUIRE an HTTP sidecar (POST /approvals/callback, GET /approvals/pending). This is a constraint violation, not just an architectural choice.",
+      "remedy": "Add explicit CON-3 amendment text: 'stdio channel honors CON-3 as the lowest-common-denominator deployment; webhook and http-poll channels REQUIRE an optional HTTP sidecar enabled at boot via PAYBOT_MCP_HTTP_SIDECAR_PORT — if unset, those channels refuse to register and only stdio is available.' Add NFR for sidecar lifecycle (bind port, AuthZ, shutdown on stdio close). Add §11 test: 'server boots with sidecar disabled; stdio channel works; webhook channel registration fails loud.'"
+    },
+    {
+      "severity": "must-fix",
+      "section": "§11 Test Strategy",
+      "issue": "No file paths, no coverage target, no property-test framework named. AIDR-009 (quality-foundation.md) mandates ≥80% coverage on changed files and concrete test paths; @dev cannot consume this as a contract.",
+      "remedy": "Add 'Test paths' subsection: e.g., `tests/unit/hitl/envelope.test.ts`, `tests/unit/hitl/state-machine.test.ts`, `tests/integration/channels/{stdio,webhook,http-poll}.test.ts`, `tests/security/replay.test.ts`, `tests/chaos/notifier-failure.test.ts`. Commit explicit '≥80% line coverage on paybot-mcp/src/hitl/**'. Name framework (vitest + fast-check is the paybot-mcp convention). Add a negative-AuthZ test for FR-14 (non-allowlisted operator-id calling paybot_hitl_approve → rejected)."
+    },
+    {
+      "severity": "must-fix",
+      "section": "§12 Risks R4 + §5.5 Audit Chain Integration",
+      "issue": "PM self-flagged 'Does the bank actually accept verifying two chains?' as the #1 question. The spec's answer is 'documented as defense-in-depth' which is rhetorical, not falsifiable. The two-chain decision is structural (touches CON-2/CON-5 boundary) and load-bearing for the pitch — it cannot rest on architectural elegance alone.",
+      "remedy": "Either (a) add a pre-pitch validation gate: 'Two-chain shape MUST be shown to a Nordic bank IT contact ahead of 2026-06-16; if rejected, fallback is single-chain via core HTTP-only writes (FR-10 original wording).' OR (b) build a one-page 'bank verifier kit' (script + 2 public keys + sample chains) as a v0.3 deliverable so the bank reviewer can run the verification themselves — turn the abstract claim into a concrete artifact in the success criteria."
+    },
+    {
+      "severity": "should-fix",
+      "section": "§5.3 Envelope Format (v0.4 multi-sig contract)",
+      "issue": "PM self-flag #3 — the 'no wire break' claim for v0.3→v0.4 multi-sig migration is conditional on OQ-D1 picking option B (keep compact JWS for primary, verify approvers[1..N] against payload bytes). If OQ-D1 picks option A (swap to JWS-JSON-Serialization), the wire format DOES break. The spec presents the forward-compat as guaranteed; it is in fact conditional.",
+      "remedy": "Rewrite §5.3 v0.4 paragraph as: 'The approvers[] array shape is forward-compatible IF v0.4 picks JWS-Compact + payload-byte-verification of approvers[1..N] (Option B). If v0.4 picks JWS-JSON-Serialization (Option A), the wire shape changes and v0.3 verifiers will not parse v0.4 envelopes — a versioned schema_version bump handles this cleanly but it IS a wire change. ADR-BP-001-v2 will commit to one option before v0.4 ships.' Truth-in-spec; the bank reviewer will respect the honesty more than a false guarantee."
+    },
+    {
+      "severity": "should-fix",
+      "section": "FR-14 + §6.2 (paybot_hitl_approve tool)",
+      "issue": "FR-14 introduces an MCP-callable tool that can approve money-moving payments. AuthZ is one env flag (PAYBOT_MCP_ALLOW_TOOL_APPROVAL=true) plus operator-id env. There is no specification of how this gates AGAINST the LLM caller — the same LLM that is being gated by HITL can call paybot_hitl_approve unless explicitly blocked.",
+      "remedy": "Add to FR-14: 'paybot_hitl_approve MUST verify caller identity against PAYBOT_MCP_TOOL_APPROVAL_ALLOWED_CALLERS allowlist (default: empty → tool disabled). The MCP host MUST pass a verifiable caller identity (operator session token, NOT just MCP transport). Without verifiable caller identity, the tool refuses.' Add §11.S test: LLM calls paybot_hitl_approve in same session → refused even with ALLOW_TOOL_APPROVAL=true."
+    },
+    {
+      "severity": "should-fix",
+      "section": "§3 FR-10 (chain architecture pivot)",
+      "issue": "requirements.json FR-10 concretely says 'paybot-core audit hash-chain (src/audit/hash-chain.ts)' — single chain via core HTTP API. Spec FR-10 pivots to 'MCP maintains its own chain anchored at executed' (two chains). This is a deliberate, defensible amendment to requirements (rationale: CON-2/CON-5), but it is NOT just a NEW addition — it CHANGES the original requirement.",
+      "remedy": "Add explicit 'Amendment to requirements.json FR-10' note: 'Original requirement specified writes-via-core-HTTP-API (single chain). After OQ-6 resolution, this spec amends to two chains with cross-anchor at executed transition. Rationale: keeping MCP self-contained per CON-2 (no shared DB) and CON-5 (no cross-import) is incompatible with MCP directly writing into core.audit.hash-chain.ts via a synchronous SDK call. Requirements.json should be updated in the next gather pass or this divergence acknowledged in the implementation plan.'"
+    },
+    {
+      "severity": "should-fix",
+      "section": "§7 + N2 vs R5 contradiction",
+      "issue": "N2 (non-goal) says 'No operator-console UI build — channels are interface contracts.' R5 mitigation says 'Slack interactive buttons are the proven fallback... demo script uses Slack-stub.' Slack-stub IS a UI build, contradicting N2. Bank reviewer will read both.",
+      "remedy": "Reconcile: 'N2 excludes a custom operator-console UI build by paybot. Slack interactive buttons are a 3rd-party integration consumed by the webhook channel — not a paybot-built UI. The Slack-stub for demo purposes is a thin Slack-app config, not a paybot deliverable, and ships under @ux-design-expert work post-spec.' Make this textually explicit so the line between 'channel contract' and 'channel implementation' is visible."
+    },
+    {
+      "severity": "nit",
+      "section": "References / operator decision sourcing",
+      "issue": "'Operator decision 2026-05-20' appears 5+ times without a referenced artifact (handoff file, memory entry, decision log). Article IV traceability is thin for these.",
+      "remedy": "Add to §13: 'Operator decisions 2026-05-20 are captured in [pointer — e.g., docs/decisions/BP-3.1-operator-decisions-2026-05-20.md or memory entry `project_bp31_operator_decisions`]'. One concrete pointer satisfies Article IV traceability."
+    },
+    {
+      "severity": "nit",
+      "section": "§5.5 cross-chain diagram",
+      "issue": "The two-chain story is the load-bearing claim of this spec. It has no diagram.",
+      "remedy": "Add a small ASCII diagram in §5.5 showing both chains, the request_id link at executed, and which Ed25519 key signs which chain. Bank reviewer reading §5.5 should not have to mentally construct it."
+    }
+  ],
+
+  "questions_for_PM_to_close": [
+    "Has the two-chain shape been validated with ANY Nordic bank IT contact, or is the 'defense-in-depth' framing untested? If untested, what is the fallback plan if the first bank reviewer says 'give me one Merkle tree'? (R4 is the spec's #1 self-flagged risk and the answer cannot be 'we believe they will accept it'.)",
+    "OQ-D1 (compact JWS vs JWS-JSON-Serialization for v0.4): is there a default lean? Bank reviewer at pitch may ask 'show me 2-of-2'. If the answer is 'TBD per ADR-BP-001-v2', is that acceptable, or should the spec commit to Option B now (which is the only option preserving the 'no wire break' claim)?",
+    "FR-14 paybot_hitl_approve — is this tool intended to be callable BY THE LLM in the same session that is being HITL-gated, or is it strictly for an out-of-band Renata-only call? The AuthZ model differs radically between the two interpretations. Current spec wording is ambiguous.",
+    "Should requirements.json FR-10 be updated to reflect the two-chain architecture, or is the spec-level divergence the canonical record? @po should weigh in on whether requirements.json is amendable post-Phase-1.",
+    "NFR-1 (p95<50ms) interaction with NFR-10 (100 concurrent + WAL) — is the perf budget measured at 1 concurrent or at 100? If at 100, the target may not be achievable on local SQLite with WAL contention.",
+    "Is the @ux-design-expert convocation for the Slack-stub demo path booked, or does R5 mitigation depend on a future delegation that has not been initiated? Pitch is 2026-06-16; this should be on a critical-path calendar."
+  ],
+
+  "recommendation": "Phase 6 (plan) should NOT proceed until the 3 must-fix items are addressed. They are all small spec edits (≤200 words each) and require no new research — CON-3 amendment is a one-paragraph carve-out, test paths/coverage are a concrete addition to §11, and the R4 bank-verifier-kit deliverable is a clear scope addition rather than a research effort. Estimated revision: 2-4 hours of @pm time. After revision, re-run Phase 5 critique (lightweight, focused on the 3 must-fix sections) and if average ≥4.0, proceed to Phase 6 (@architect plan). The should-fix items (4-7) can be addressed in the same revision pass without cost. Nit items can land in the implementation plan as @dev TODO notes. NEEDS_REVISION verdict, not BLOCKED — the spec is fundamentally sound, well-researched, and constitutionally compliant; it needs sharpening, not re-design.",
+
+  "strengths_to_preserve": [
+    "Article IV traceability is genuinely strong — Source columns + NEW markers with rationale are exemplary",
+    "Hybrid timeout state machine (pending → durable_pending → approved → executed) is the right design and well-defended by research",
+    "JWS(EdDSA) wrapper decision is research-justified, bank-readable, and additive (preserves VERITAS underneath)",
+    "Operator hybrid posture (tightened T_a defaults) is honestly stated as a divergence from architect §2, not hidden",
+    "OQ-D deferral table (§9) is rigorous — each deferred item has a falsifiable 'why safe' rationale",
+    "Bypass mode hardening (build-flag + production refusal + signed BypassEnvelope) closes a real attack vector",
+    "DORA 5-year retention + exit plan explicitly elevated to NFR-11 rather than buried in references"
+  ],
+
+  "blind_spots_to_acknowledge": [
+    "Same-model risk: this critique was produced by the same underlying model that drafted the spec. The 'two chains acceptable' assumption and the 'wire format won't break' assumption are exactly the kind of plausible-but-uncross-checked claims SVG-1 flags. Recommend @aiox-master convoke an out-of-band human reviewer (Nordic bank IT, if reachable in <2 weeks) on the must-fix R4 item before pitch.",
+    "Research depth on Nordic bank specifics: research.json is strong on EU regulatory (PSD2/PSD3/DORA/AMLD6) but light on what FIN-FSA, Nordea, and SEB specifically ask in pre-pilot diligence. A second research pass focused on 'what 5 Nordic banks demanded in agent-economy pilots 2024-2026' would strengthen R4.",
+    "FR-14 AuthZ gap was almost missed in this critique pass — the spec's framing as 'Renata-only programmatic surface' is reassuring on first read and only reveals the LLM-callability problem on second look. The same blind spot will affect bank reviewers."
+  ]
+}

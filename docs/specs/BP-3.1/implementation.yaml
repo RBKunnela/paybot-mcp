@@ -1,0 +1,759 @@
+# BP-3.1 Implementation Plan — HITL Approval Middleware for paybot-mcp
+# Spec Pipeline Phase 6 (Plan) — machine-readable task breakdown for @dev consumption
+# Authored against spec.md v0.2 (avg score ~4.5 post-revision)
+
+story_id: BP-3.1
+spec_version: 0.2
+planned_by: aios-architect
+planned_date: 2026-05-20
+target_repo: paybot-mcp
+target_branch: feature/bp-3.1-hitl-middleware
+
+# ── Sizing reality check ───────────────────────────────────────────────
+# Epic AC said 5h. That estimate was for "HITL gate" framed as a single
+# wrapper. The revised spec (v0.2) ships:
+#   - 6-state machine with hybrid durable path
+#   - 3 notifier channels (stdio form-mode, webhook HMAC, http-poll)
+#   - HTTP sidecar (separate process)
+#   - JWS(EdDSA) envelope + VERITAS reuse
+#   - Own audit-chain with cross-anchor to core
+#   - 2 new tools (paybot_pay_status, paybot_hitl_approve)
+#   - Bypass mode with build-flag + prod refusal
+#   - Bank-verifier-kit (FR-15)
+#   - 20+ test files across 6 categories
+# Honest re-estimate: 22h (≈4.4× the epic AC). See risk_assessment R0.
+total_estimated_hours: 22
+critical_path_hours: 16
+
+# ── Phase graph (parallelization analysis at bottom of file) ───────────
+phases:
+
+  - id: P1-setup
+    name: "Module scaffold + types + module-level docs"
+    estimated_hours: 1.0
+    parallelizable_with: []
+    blocks_phases: [P2-envelope, P3-state-machine, P4-channels, P7-audit-chain]
+    tasks:
+      - id: T1.1
+        description: |
+          Create src/middleware/hitl/ directory tree. Add module-level doc comment per
+          AIDR-009 quality-foundation Pillar 2.
+        files_to_create:
+          - "src/middleware/hitl/index.ts"            # public exports
+          - "src/middleware/hitl/types.ts"            # all shared types
+          - "src/middleware/hitl/errors.ts"           # typed MCP error constructors
+        files_to_modify: []
+        spec_refs: ["§5.1", "§5.7"]
+        acceptance_test: "tsc --noEmit succeeds; npm run lint passes; module-level doc comment present in every new file."
+        dev_notes: |
+          types.ts MUST export at minimum: ApprovalState (6-state union),
+          PendingEnvelope, SignedEnvelope (JWS three-part), ApprovalEnvelopePayload
+          (FR-11 sanitized shape), BypassEnvelope, ApprovalDecision,
+          ApprovalNotifier interface (§5.4), AuditChainEntry, HitlPolicy.
+      - id: T1.2
+        description: "Add npm deps: jose (JWS), better-sqlite3, uuid (v7), @noble/ed25519 fallback (if VERITAS signer not available locally for tests)."
+        files_to_create: []
+        files_to_modify: ["package.json", "package-lock.json"]
+        spec_refs: ["FR-4", "FR-7", "NFR-9"]
+        acceptance_test: "npm ci succeeds; npm run build succeeds; no peer-dep warnings."
+        dev_notes: |
+          jose is the canonical JOSE library; uuid v7 ships in uuid>=9.0.
+          Pin exact versions per release-train.md (ADR-BP-007).
+
+  - id: P2-envelope
+    name: "JWS(EdDSA) envelope encode/decode + canonical-JSON + dynamic linking + timestamp normalization"
+    estimated_hours: 2.5
+    parallelizable_with: [P3-state-machine, P4-channels-types]
+    blocks_phases: [P6-middleware-wrap, P7-audit-chain]
+    tasks:
+      - id: T2.1
+        description: |
+          Implement canonical-JSON serialization for the envelope payload. RFC 8785
+          (JSON Canonicalization Scheme) is the target — recursive sort by key,
+          UTF-8, no insignificant whitespace.
+        files_to_create:
+          - "src/middleware/hitl/canonical-json.ts"
+        files_to_modify: []
+        spec_refs: ["§5.3 Envelope Format", "FR-4"]
+        acceptance_test: "Property-based test (fast-check): 1000 random JSON objects → canonical form is stable under permutation."
+        dev_notes: |
+          Look at how Helena/ALMA chains canonicalize (memory: project_veritas_three_chains_live).
+          Reuse their lib if possible — DO NOT invent a 3rd canonicalization scheme.
+      - id: T2.2
+        description: |
+          Implement timestamp normalization helper. Postgres strips trailing zeros on
+          timestamptz — verifiers MUST round-trip parse-and-re-emit before signing.
+        files_to_create:
+          - "src/middleware/hitl/timestamp.ts"
+        files_to_modify: []
+        spec_refs: ["NFR-3", "memory: feedback_veritas_timestamp_normalization"]
+        acceptance_test: "Property test: 1000 random timestamps round-trip identically."
+        dev_notes: "This is a memory-anchored gotcha. Skipping it WILL break verifier kit."
+      - id: T2.3
+        description: |
+          Implement encodeEnvelope() + decodeEnvelope() using jose JWS compact form.
+          Dynamic-linking: recipient + amount + asset + network INSIDE signed payload.
+          FR-11 allowlist sanitization applied BEFORE signing.
+        files_to_create:
+          - "src/middleware/hitl/envelope.ts"
+          - "src/middleware/hitl/sanitize.ts"
+        files_to_modify: []
+        spec_refs: ["FR-4", "FR-5", "FR-11", "§5.3", "CON-9"]
+        acceptance_test: |
+          tests/unit/hitl/envelope.test.ts:
+            - JWS three-part wire shape
+            - Protected header has alg=EdDSA, typ=paybot-approval+jws, kid, iat, exp
+            - Tampering recipient/amount/asset/network → verify fails (dynamic linking)
+            - Sanitization drops apiKey, walletPrivateKey, headers (≥50 input shapes via fast-check)
+            - 1000-round canonical-JSON fuzz → 0 mismatches (NFR-3)
+        dev_notes: |
+          VERITAS signer integration: use src/middleware/hitl/veritas-signer.ts (T2.4)
+          for actual sign(); envelope.ts only orchestrates encode/decode. Allowlist is
+          source-of-truth in sanitize.ts: future fields default to EXCLUDED.
+      - id: T2.4
+        description: |
+          VERITAS signer adapter. Reuses key-registry from memory project_veritas_three_chains_live.
+          Fail-closed if signer/key unavailable (OQ-8 → VERITAS_SIGNER_UNAVAILABLE error).
+        files_to_create:
+          - "src/middleware/hitl/veritas-signer.ts"
+        files_to_modify: []
+        spec_refs: ["FR-4", "NFR-3", "OQ-8", "CON-1"]
+        acceptance_test: |
+          Unit test: signer unavailable → throws typed VeritasSignerUnavailableError.
+          Roundtrip sign/verify with test keypair → 1000 envelopes, 0 mismatches.
+        dev_notes: |
+          DO NOT invent a new signing scheme (Article IV, CON-1). The MCP key-id is
+          'paybot-mcp-chain' per memory project_veritas_three_chains_live. Key path
+          and registry contract MUST match what Helena/ALMA use. Confirm with @devops
+          where the dev key lives (.env or KEY_REGISTRY_PATH).
+
+  - id: P3-state-machine
+    name: "Approval state machine + SQLite persistence (WAL) + restart resume"
+    estimated_hours: 2.5
+    parallelizable_with: [P2-envelope, P4-channels-types]
+    blocks_phases: [P6-middleware-wrap]
+    tasks:
+      - id: T3.1
+        description: |
+          Pure functional state machine: validates transitions, refuses invalid moves
+          (e.g., terminal → anything, pending → executed without approved).
+        files_to_create:
+          - "src/middleware/hitl/state-machine.ts"
+        files_to_modify: []
+        spec_refs: ["FR-2", "§5.2"]
+        acceptance_test: |
+          tests/unit/hitl/state-machine.test.ts:
+            - All 6 transitions in §5.2 diagram succeed
+            - Invalid transitions throw InvalidTransitionError
+            - Idempotency: transition(x→y) applied twice = transition(x→y) once
+            - T_a/T_b/T_c clock semantics: durable fork only when amount ≥ threshold
+        dev_notes: "Threshold from PAYBOT_MCP_HITL_DURABLE_THRESHOLD env (default 100). Currency-aware: EUR vs USD threshold."
+      - id: T3.2
+        description: |
+          SQLite store with WAL mode at .state/approvals.sqlite. Idempotent on
+          request_id (UUIDv7). Schema versioning in a meta table.
+        files_to_create:
+          - "src/middleware/hitl/store/sqlite-store.ts"
+          - "src/middleware/hitl/store/types.ts"
+          - "src/middleware/hitl/store/schema.sql"
+        files_to_modify: [".gitignore"]
+        spec_refs: ["FR-7", "NFR-4", "NFR-10", "CON-2"]
+        acceptance_test: |
+          tests/integration/hitl/store-restart.test.ts:
+            - Insert pending → kill process → restart → pending still readable
+            - 100 concurrent inserts → 0 SQLITE_BUSY (WAL mode confirmed)
+            - request_id UNIQUE constraint enforced
+        dev_notes: |
+          .gitignore must include paybot-mcp/.state/. CON-2 honored: only SQLite,
+          no new DB. Pluggable interface (StoreAdapter) so hosted MCP can swap to
+          Postgres/Redis later (operator default per FR-7).
+      - id: T3.3
+        description: |
+          ApprovalGate orchestrator: combines state-machine + store + hybrid wait
+          (T_a sync → T_c durable fall-through).
+        files_to_create:
+          - "src/middleware/hitl/approval-gate.ts"
+        files_to_modify: []
+        spec_refs: ["FR-2", "FR-6", "§5.2", "NFR-2"]
+        acceptance_test: |
+          Unit tests cover:
+            - Sync approval within T_a → executes
+            - T_a expires + amount ≥ threshold → returns HITL_DURABLE_PENDING ≤200ms
+            - T_a expires + amount < threshold → returns APPROVAL_TIMEOUT
+            - T_b hard ceiling for stdio (5min) enforced even if T_a would extend
+        dev_notes: |
+          HITL_DURABLE_PENDING return path MUST be fast (NFR-2 ≤200ms). Don't block
+          on storage flush — fire-and-forget the durable_pending state write.
+      - id: T3.4
+        description: |
+          Restart-recovery scan on boot: load all pending+durable_pending rows; if
+          past their T_b/T_c expiry → transition to timeout. NFR-4 phantom-pending guard.
+        files_to_create:
+          - "src/middleware/hitl/recovery.ts"
+        files_to_modify: ["src/index.ts"]   # boot hook
+        spec_refs: ["NFR-4", "G5"]
+        acceptance_test: |
+          tests/chaos/hitl/restart-resume.test.ts:
+            - kill -9 mid-pending → restart → in-flight resumed, NOT lost
+            - kill -9 with expired pending → restart → transitioned to timeout, 0 phantoms
+
+  - id: P4-channels
+    name: "Three notifier implementations (stdio, webhook, http-poll)"
+    estimated_hours: 3.5
+    parallelizable_with: []                # internally serial after P2+P3
+    blocks_phases: [P5-sidecar, P6-middleware-wrap]
+    tasks:
+      - id: T4.1
+        description: |
+          Define ApprovalNotifier interface (channel/notify/poll?/receive?). Plug-in
+          factory keyed by PAYBOT_MCP_APPROVAL_CHANNEL.
+        files_to_create:
+          - "src/middleware/hitl/channels/notifier.ts"
+          - "src/middleware/hitl/channels/factory.ts"
+        files_to_modify: []
+        spec_refs: ["FR-3", "§5.4"]
+        acceptance_test: "Factory returns correct concrete class for each of {stdio, webhook, http-poll}."
+      - id: T4.2
+        description: "Stdio notifier: MCP elicitation FORM-mode (per research §mcp-specific). Renders pending envelope as structured prompt."
+        files_to_create:
+          - "src/middleware/hitl/channels/stdio.ts"
+        files_to_modify: []
+        spec_refs: ["FR-3", "§5.4", "OQ-D7"]
+        acceptance_test: |
+          tests/unit/hitl/notifier-stdio.test.ts:
+            - Elicitation prompt contains all fields from human_readable_summary
+            - operator approve/reject mapped to ApprovalDecision
+            - Optional path via paybot_hitl_approve tool (FR-14) also works
+            - stdout cleanliness: no logs go to stdout (only stderr)
+        dev_notes: |
+          MCP elicitation spec is draft. Conform to the current draft (link in §13);
+          tracked OQ-D7 for ratification.
+      - id: T4.3
+        description: |
+          Webhook notifier: outbound POST to operator console with HMAC-SHA256
+          signed body. MCP elicitation URL-mode opens the console URL.
+        files_to_create:
+          - "src/middleware/hitl/channels/webhook.ts"
+          - "src/middleware/hitl/channels/hmac.ts"
+        files_to_modify: []
+        spec_refs: ["FR-3", "NFR-9", "OQ-7", "§5.4"]
+        acceptance_test: |
+          tests/unit/hitl/notifier-webhook.test.ts:
+            - HMAC-SHA256(canonical_body, PAYBOT_MCP_WEBHOOK_SECRET) in X-Paybot-HMAC
+            - URL-mode payload shape
+            - Retry exponential backoff, max 5 attempts (NFR-8)
+        dev_notes: |
+          PAYBOT_MCP_WEBHOOK_SECRET MUST be 32-byte (256 bits). Refuse to start if
+          shorter when channel=webhook. Mask in logs per feedback_credentials_masking.
+      - id: T4.4
+        description: |
+          Http-poll notifier: serves GET /approvals/pending, ingests POST /approvals/callback
+          (same HMAC contract as webhook). Sidecar wires it (P5).
+        files_to_create:
+          - "src/middleware/hitl/channels/http-poll.ts"
+        files_to_modify: []
+        spec_refs: ["FR-3", "NFR-9", "§5.4"]
+        acceptance_test: |
+          tests/unit/hitl/notifier-http-poll.test.ts:
+            - GET /approvals/pending returns array of PendingEnvelope (sanitized)
+            - POST /approvals/callback verifies HMAC, replay-checks request_id
+
+  - id: P5-sidecar
+    name: "HTTP sidecar process for webhook + http-poll channels (CON-3 amendment)"
+    estimated_hours: 2.0
+    parallelizable_with: []
+    blocks_phases: [P6-middleware-wrap, P11-tests]
+    tasks:
+      - id: T5.1
+        description: |
+          paybot-mcp-approval-sidecar entry point. Binds PAYBOT_MCP_HTTP_SIDECAR_PORT
+          (default 7843, localhost-only). Starts only when channel ∈ {webhook, http-poll}.
+          stdio mode binds zero ports (CON-3 invariant preserved).
+        files_to_create:
+          - "src/sidecar/index.ts"
+          - "src/sidecar/server.ts"
+          - "src/sidecar/routes.ts"
+        files_to_modify:
+          - "package.json"               # add bin entry "paybot-mcp-approval-sidecar"
+        spec_refs: ["NFR-12", "CON-3 amended (§5.4)"]
+        acceptance_test: |
+          tests/integration/hitl/sidecar-lifecycle.test.ts:
+            - PAYBOT_MCP_APPROVAL_CHANNEL=stdio → sidecar refuses to start, exit code 0
+            - channel=webhook → sidecar binds default port 7843, GET /health 200 {status:ok, channel:webhook}
+            - Port bind failure → SIDECAR_BIND_FAILED, MCP refuses to start
+            - SIGTERM → 5s grace shutdown
+            - Logs ONLY to stderr (stdout cleanliness for MCP transport)
+        dev_notes: |
+          localhost-only bind (127.0.0.1, not 0.0.0.0). Sidecar is its own process so
+          MCP server proper can keep CON-3 stdio invariant unconditionally.
+      - id: T5.2
+        description: "Process lifecycle: MCP server spawns sidecar on boot if channel needs it; tears it down on MCP exit."
+        files_to_create:
+          - "src/sidecar/lifecycle.ts"
+        files_to_modify:
+          - "src/index.ts"
+        spec_refs: ["NFR-12"]
+        acceptance_test: |
+          - Killing MCP server kills sidecar within 5s
+          - Sidecar crash → MCP server logs warning, attempts 3 respawns, then refuses approvals (fail-closed)
+
+  - id: P6-middleware-wrap
+    name: "wrapWithHitl wraps paybot_pay (and prep for paybot_pay_eur from BP-3.2)"
+    estimated_hours: 2.0
+    parallelizable_with: []
+    blocks_phases: [P11-tests, P9-bypass-mode]
+    tasks:
+      - id: T6.1
+        description: |
+          Implement wrapWithHitl(handler, policy) decorator. Composes:
+          sanitize → persist(pending) → ApprovalGate.requestApproval → sign envelope
+          → AuditChain.append → call original handler with X-Paybot-Approval-Envelope
+          header → persist(executed|failed) → return.
+        files_to_create:
+          - "src/middleware/hitl/wrap.ts"
+        files_to_modify: []
+        spec_refs: ["FR-1", "FR-5", "§5.1"]
+        acceptance_test: |
+          tests/unit/hitl/wrap.test.ts:
+            - Wrapped handler is called only after approved
+            - X-Paybot-Approval-Envelope header carries JWS string
+            - Reject path → APPROVAL_REJECTED error returned, handler NOT called
+            - Timeout path → APPROVAL_TIMEOUT, handler NOT called
+            - Durable path → HITL_DURABLE_PENDING ≤200ms, handler NOT called
+        dev_notes: |
+          Handler signature MUST stay backwards-compatible — only header injection
+          changes for downstream. SDK call passes opts.headers per existing surface.
+      - id: T6.2
+        description: |
+          Apply wrap to paybot_pay registration in server.ts. Forward-prep for
+          paybot_pay_eur (BP-3.2) by exporting a registry of HITL-gated tool names.
+        files_to_create: []
+        files_to_modify:
+          - "src/server.ts"
+          - "src/middleware/hitl/index.ts"   # export GATED_TOOLS = ['paybot_pay', 'paybot_pay_eur']
+        spec_refs: ["FR-1", "§6.1"]
+        acceptance_test: |
+          tests/integration/hitl/end-to-end-stdio.test.ts:
+            - paybot_pay call → elicitation prompt → approve → SDK called with header → success result
+            - tool schema for paybot_pay does NOT expose bypass_hitl / skip_approval / override_hitl (FR-14 invariant)
+        dev_notes: |
+          Tool-schema invariant (FR-14 must-fix): scan paybot_pay's z.object schema
+          and assert no key matches /bypass|skip[_-]?approval|override.*hitl/i.
+
+  - id: P7-audit-chain
+    name: "MCP-side VERITAS audit chain + cross-anchor at executed"
+    estimated_hours: 2.0
+    parallelizable_with: [P4-channels]    # can start once P2 done
+    blocks_phases: [P10-verifier-kit, P11-tests]
+    tasks:
+      - id: T7.1
+        description: |
+          AuditChain append-only ledger at .state/audit-chain.sqlite. Each entry signed
+          with VERITAS key (kid: paybot-mcp-chain). h_N = H(h_{N-1} ∥ entry_N).
+        files_to_create:
+          - "src/middleware/hitl/audit-chain/chain.ts"
+          - "src/middleware/hitl/audit-chain/types.ts"
+          - "src/middleware/hitl/audit-chain/schema.sql"
+        files_to_modify: []
+        spec_refs: ["FR-10", "NFR-6", "§5.5"]
+        acceptance_test: |
+          - Property test: 1000 appends → 1000 entries, all hash-linked
+          - Tamper any entry → chain verification fails
+          - Each state transition writes exactly one entry (NFR-6)
+      - id: T7.2
+        description: |
+          Cross-anchor at executed: read core-side audit-event-ID from client.pay()
+          response, write it into MCP chain entry's core_audit_ref field.
+        files_to_create: []
+        files_to_modify:
+          - "src/middleware/hitl/wrap.ts"   # add cross-anchor write step
+        spec_refs: ["FR-10 (amended)", "§5.5", "CON-2", "CON-5"]
+        acceptance_test: |
+          tests/integration/hitl/audit-chain.test.ts:
+            - paybot_pay end-to-end → MCP chain has 3 entries (pending, approved, executed)
+            - executed entry's core_audit_ref matches SDK response
+            - SDK response without audit-event-ID → log warning but don't crash (degrade-gracefully; track for BP-3.3)
+        dev_notes: |
+          @devops dependency: paybot-core must populate audit_event_id in pay()
+          response. If not yet shipped, write a TODO entry with core_audit_ref="PENDING"
+          and a backfill plan in BP-3.3.
+      - id: T7.3
+        description: "Retention policy: cleanup job purges audit-chain entries >5 years (AMLD6 minimum). Documented in release notes."
+        files_to_create:
+          - "src/middleware/hitl/audit-chain/retention.ts"
+          - "docs/RETENTION-POLICY.md"
+        files_to_modify: []
+        spec_refs: ["NFR-11"]
+        acceptance_test: "Unit test: entries with timestamp > 5y → purged on cleanup tick."
+
+  - id: P8-tools-aux
+    name: "New tools: paybot_pay_status, paybot_hitl_approve"
+    estimated_hours: 1.5
+    parallelizable_with: [P9-bypass-mode]
+    blocks_phases: [P11-tests]
+    tasks:
+      - id: T8.1
+        description: |
+          paybot_pay_status(request_id) — read-only state lookup. No HITL gate.
+          Used by LLM after HITL_DURABLE_PENDING.
+        files_to_create:
+          - "src/tools/paybot-pay-status.ts"
+        files_to_modify:
+          - "src/server.ts"
+        spec_refs: ["FR-13", "§6.2"]
+        acceptance_test: |
+          - Returns {state, decided_at?, envelope?, executed_tx_hash?}
+          - request_id not found → typed error, not crash
+          - LLM can call this freely; no AuthZ
+      - id: T8.2
+        description: |
+          paybot_hitl_approve(request_id, decision, reason?) — HARDENED PER @qa FR-14.
+          Gated by ALL of:
+            - PAYBOT_MCP_TOOL_APPROVAL_ALLOWED_CALLERS allowlist (default empty → disabled)
+            - PAYBOT_MCP_ALLOW_TOOL_APPROVAL=true
+            - verifiable host-passed caller identity (operator session token, NOT transport identity)
+          Missing any → HITL_BYPASS_DENIED.
+        files_to_create:
+          - "src/tools/paybot-hitl-approve.ts"
+          - "src/middleware/hitl/caller-identity.ts"  # extracts + validates caller token
+        files_to_modify:
+          - "src/server.ts"
+        spec_refs: ["FR-14", "§6.2", "HITL_BYPASS_DENIED error"]
+        acceptance_test: |
+          tests/security/hitl/llm-cannot-bypass.test.ts:
+            - (a) LLM calls paybot_pay({..., bypass_hitl: true}) → HITL_BYPASS_DENIED
+                  (tool schema rejects unknown key OR middleware strips+denies)
+            - (b) Tool-schema introspection → zero bypass fields exposed
+            - (c) paybot_hitl_approve called without caller in allowlist → HITL_BYPASS_DENIED
+            - (d) paybot_hitl_approve called WITH valid caller in allowlist → state transitions
+        dev_notes: |
+          MCP host caller-identity extraction depends on host implementation. For
+          Claude Desktop, the operator session token comes from a host extension
+          (TBD with @devops). For the demo, document a stub adapter that accepts
+          an env-var-defined token; production deployments require real host
+          integration. This is the @qa-flagged AuthZ gap — DO NOT ship without it.
+
+  - id: P9-bypass-mode
+    name: "HITL_BYPASS env with prod-refusal + audit-chain BypassEnvelope"
+    estimated_hours: 1.0
+    parallelizable_with: [P8-tools-aux]
+    blocks_phases: [P11-tests]
+    tasks:
+      - id: T9.1
+        description: |
+          Boot-time enforcement. Three env vars:
+            HITL_BYPASS=true                    (runtime)
+            HITL_BYPASS_OPERATOR_ID=<id>        (required when HITL_BYPASS=true)
+            PAYBOT_MCP_ALLOW_BYPASS=true        (build-time only, baked at build)
+          Production bundle (NODE_ENV=production) MUST ship with ALLOW_BYPASS=false.
+        files_to_create:
+          - "src/middleware/hitl/bypass.ts"
+        files_to_modify:
+          - "src/index.ts"
+          - "build/build-flags.ts"   # build-time constant injection
+        spec_refs: ["FR-9", "NFR-5", "§5.6"]
+        acceptance_test: |
+          tests/security/hitl/bypass-refused-in-prod.test.ts:
+            - HITL_BYPASS=true + NODE_ENV=production + ALLOW_BYPASS=false → boot throws
+            - HITL_BYPASS=true + HITL_BYPASS_OPERATOR_ID unset → boot throws
+            - HITL_BYPASS=true + ALLOW_BYPASS=true + dev mode → boots, bypass active
+        dev_notes: |
+          ALLOW_BYPASS is a BUILD-TIME constant, not runtime env. Use a small
+          esbuild/tsc define so it cannot be flipped post-build. Per memory
+          feedback_credentials_masking: bypass-related logs must NOT expose token
+          shapes.
+      - id: T9.2
+        description: |
+          When bypass active, middleware writes a signed BypassEnvelope to audit-chain
+          BEFORE calling SDK. Bank-verifier-kit surfaces bypassed=true prominently.
+        files_to_create: []
+        files_to_modify:
+          - "src/middleware/hitl/wrap.ts"
+          - "src/middleware/hitl/audit-chain/chain.ts"
+        spec_refs: ["FR-9", "§5.6"]
+        acceptance_test: |
+          - Bypass mode → audit-chain entry has decision=bypassed, bypass_operator_id present
+          - SDK call still uses X-Paybot-Approval-Envelope header (BypassEnvelope, same JWS shape)
+
+  - id: P10-verifier-kit
+    name: "FR-15 offline bank-verifier-kit (script + keys + samples + runbook)"
+    estimated_hours: 1.5
+    parallelizable_with: [P11-tests]
+    blocks_phases: []
+    tasks:
+      - id: T10.1
+        description: |
+          Standalone Node verifier with zero paybot deps (only `crypto` + `jose`).
+          <200 LOC. Bank IT runs it on the excerpt their CIO downloaded.
+        files_to_create:
+          - "docs/pitch/bank-verifier-kit/verify-paybot-hitl.js"
+          - "docs/pitch/bank-verifier-kit/package.json"            # only jose dep
+          - "docs/pitch/bank-verifier-kit/pubkeys/paybot-mcp-chain.pub"
+          - "docs/pitch/bank-verifier-kit/pubkeys/paybot-core-chain.pub"
+          - "docs/pitch/bank-verifier-kit/samples/approval-chain.json"
+          - "docs/pitch/bank-verifier-kit/samples/rejection-chain.json"
+          - "docs/pitch/bank-verifier-kit/RUNBOOK.md"
+        files_to_modify: []
+        spec_refs: ["FR-15", "R4 mitigation", "Success criterion #7"]
+        acceptance_test: |
+          tests/audit/hitl/verifier-kit-smoke.test.ts:
+            - CI runs the kit against samples/{approval,rejection}-chain.json
+            - Both verify successfully
+            - Tampering any field in either sample → kit reports failure with line number
+        dev_notes: |
+          Public keys come from VERITAS registry — coordinate with @devops on
+          publishing path. Samples are generated by a fixture script that runs
+          end-to-end flows (one approved, one rejected) and exports the chains.
+      - id: T10.2
+        description: "1-page runbook (RUNBOOK.md) for bank IT — install Node 18+, npm i, node verify-paybot-hitl.js <excerpt.json>. No paybot accounts needed."
+        files_to_create: []
+        files_to_modify: ["docs/pitch/bank-verifier-kit/RUNBOOK.md"]
+        spec_refs: ["FR-15", "Success criterion #7"]
+        acceptance_test: "Manual review by Renata: a non-paybot engineer can run it in <10 minutes."
+
+  - id: P11-tests
+    name: "Test file completion + coverage gate"
+    estimated_hours: 2.5
+    parallelizable_with: []
+    blocks_phases: []
+    tasks:
+      - id: T11.1
+        description: |
+          Ensure every test file enumerated in spec §11 exists with at least the
+          listed assertions. Most are scaffolded by earlier phases; this phase
+          fills gaps and adds regression + chaos tiers.
+        files_to_create:
+          # Unit (BP-3.1.U) — most created in P2/P3/P4 already
+          - "tests/unit/hitl/envelope.test.ts"                  # T2.3 created
+          - "tests/unit/hitl/state-machine.test.ts"             # T3.1 created
+          - "tests/unit/hitl/sanitization.test.ts"              # T2.3 created
+          - "tests/unit/hitl/notifier-stdio.test.ts"            # T4.2 created
+          - "tests/unit/hitl/notifier-webhook.test.ts"          # T4.3 created
+          - "tests/unit/hitl/notifier-http-poll.test.ts"        # T4.4 created
+          # Integration (BP-3.1.I)
+          - "tests/integration/hitl/end-to-end-stdio.test.ts"
+          - "tests/integration/hitl/end-to-end-webhook.test.ts"
+          - "tests/integration/hitl/end-to-end-http-poll.test.ts"
+          - "tests/integration/hitl/sidecar-lifecycle.test.ts"  # T5.1 created
+          - "tests/integration/hitl/stdio-only-no-http.test.ts"
+          - "tests/integration/hitl/core-header-verification.test.ts"
+          - "tests/integration/hitl/audit-chain.test.ts"        # T7.2 created
+          # Security (BP-3.1.S)
+          - "tests/security/hitl/replay-defense.test.ts"
+          - "tests/security/hitl/bypass-refused-in-prod.test.ts" # T9.1 created
+          - "tests/security/hitl/webhook-hmac.test.ts"
+          - "tests/security/hitl/dynamic-linking-tamper.test.ts"
+          - "tests/security/hitl/llm-cannot-bypass.test.ts"     # T8.2 created
+          # Regression (BP-3.1.R)
+          - "tests/regression/hitl/bp16-baseline.test.ts"
+          - "tests/regression/hitl/ungated-tools-unchanged.test.ts"
+          # Chaos (BP-3.1.C)
+          - "tests/chaos/hitl/notifier-failure.test.ts"
+          - "tests/chaos/hitl/concurrent-pendings.test.ts"
+          - "tests/chaos/hitl/restart-resume.test.ts"           # T3.4 created
+          # DORA-audit (BP-3.1.D)
+          - "tests/audit/hitl/chain-integrity.test.ts"
+          - "tests/audit/hitl/verifier-kit-smoke.test.ts"       # T10.1 created
+        files_to_modify:
+          - "vitest.config.ts"           # add coverage thresholds for src/middleware/hitl/**
+        spec_refs: ["§11", "NFR-1 through NFR-12", "Success criteria 1-7"]
+        acceptance_test: |
+          npm test → ALL pass, zero skipped
+          npm run test:coverage → src/middleware/hitl/** lines ≥80% (AIDR-009)
+          coverage.thresholds.lines = 80 enforced; @qa veto if below.
+        dev_notes: |
+          25 test files total. Many scaffolded in earlier phases; this phase ensures
+          completion + adds:
+            - core-header-verification.test.ts (cross-repo: needs paybot core stub)
+            - replay-defense.test.ts (envelope expiry + nonce store mock)
+            - notifier-failure.test.ts (50% failure injection → 100% terminal)
+            - concurrent-pendings.test.ts (100 concurrent → 0 SQLITE_BUSY)
+            - bp16-baseline.test.ts (BP-1.6 baseline still green)
+            - ungated-tools-unchanged.test.ts (paybot_balance/_history/_register intact)
+            - chain-integrity.test.ts (100 random tx → audit excerpt verifiable)
+      - id: T11.2
+        description: "Configure vitest coverage scoped to src/middleware/hitl/**. Lines ≥80% threshold. PR blocked if drops."
+        files_to_create: []
+        files_to_modify:
+          - "vitest.config.ts"
+          - "package.json"               # ensure 'test:coverage' script exists
+        spec_refs: ["§11 coverage target", "AIDR-009 quality-foundation"]
+        acceptance_test: "vitest --coverage fails when src/middleware/hitl/** drops below 80%."
+
+# ── Cross-repo dependencies (paybot core side) ─────────────────────────
+cross_repo_dependencies:
+  - repo: paybot
+    items:
+      - description: "VERITAS public key for paybot-mcp-chain published at docs/architecture/keys/paybot-mcp-chain.pub"
+        owner: "@devops (Gage)"
+        blocks: "P10-verifier-kit (T10.1)"
+        status: "pending"
+      - description: "Core /v1/audit/verify endpoint accepts X-Paybot-Approval-Envelope and verifies JWS(EdDSA) against VERITAS key registry; refuses settlement if absent/invalid"
+        owner: "@dev (Dex) on paybot core, ADR-BP-001 amendment"
+        blocks: "P6-middleware-wrap (T6.2), P11-tests (integration/hitl/core-header-verification.test.ts)"
+        status: "pending — coordinate ADR amendment"
+      - description: "Core hash-chain returns audit_event_id in pay() response (cross-anchor seed)"
+        owner: "@dev (Dex) on paybot core"
+        blocks: "P7-audit-chain (T7.2)"
+        status: "graceful-degrade if not shipped: log warning, store 'PENDING'"
+      - description: "Core-side 30-day request_id nonce store (NFR-9 replay defense)"
+        owner: "@dev (Dex) on paybot core, ADR-BP-002 amendment"
+        blocks: "P11-tests (integration/core-header-verification + security/replay-defense)"
+        status: "pending"
+  - repo: paybot-sdk
+    items:
+      - description: "client.pay() opts.headers passes X-Paybot-Approval-Envelope through verbatim"
+        owner: "@dev (Dex) on paybot-sdk"
+        blocks: "P6-middleware-wrap (T6.1)"
+        status: "pending — verify or add"
+
+# ── Risk register (planning view) ──────────────────────────────────────
+risk_assessment:
+  - id: R0
+    description: |
+      Epic AC says 5h; honest re-estimate is 22h. If the 5h is hard-locked, scope
+      must shrink: e.g., ship only stdio channel in v0.3 (defer webhook+http-poll
+      to v0.3.1). All three channels in v0.3 was an explicit operator decision
+      2026-05-20, so descope requires operator re-approval.
+    likelihood: H
+    impact: H
+    mitigation_in_plan: "Surface this in completion summary; flag to @pm for epic-AC re-estimate. P11 + bank-verifier-kit are the most descope-able if needed."
+  - id: R1
+    description: "Hybrid state machine + durable fork doubles test surface (spec R1)"
+    likelihood: M
+    impact: H
+    mitigation_in_plan: "P3 includes property-based state-machine test enumerating ALL transitions. P11 chaos tier covers durable-resume."
+  - id: R2
+    description: "Webhook channel requires HTTP sidecar — air-gapped pilot may refuse"
+    likelihood: M
+    impact: M
+    mitigation_in_plan: "http-poll channel is the explicit air-gap fallback (P4, P5). Sidecar starts ONLY when channel needs it (T5.1)."
+  - id: R3
+    description: "MCP elicitation spec is draft — host support varies"
+    likelihood: M
+    impact: M
+    mitigation_in_plan: "Stdio form-mode is lowest-common-denominator; Claude Desktop confirmed support. OQ-D7 tracked."
+  - id: R4
+    description: "Bank may demand single Merkle tree, not two chains (spec R4)"
+    likelihood: M
+    impact: M
+    mitigation_in_plan: "P10-verifier-kit turns claim into falsifiable artifact. Merkle unification deferred to BP-3.x as documented fallback."
+  - id: R5
+    description: "No operator console UI — webhook demo needs Slack stub"
+    likelihood: H
+    impact: M
+    mitigation_in_plan: "Slack-stub is 3rd-party config, not paybot deliverable. Must be booked with @ux-design-expert by 2026-05-27."
+  - id: R6
+    description: |
+      FR-14 caller-identity model depends on MCP host extension that does not exist
+      uniformly across hosts. Claude Desktop adapter is TBD.
+    likelihood: M
+    impact: H
+    mitigation_in_plan: "T8.2 ships a documented stub adapter (env-var token) for demo; production deployments require real host integration. Flag to @devops for host-integration backlog."
+  - id: R7
+    description: "Build-time ALLOW_BYPASS injection (T9.1) may interact with tsc/esbuild config in unexpected ways"
+    likelihood: L
+    impact: H
+    mitigation_in_plan: "T9.1 dev_notes calls out using a `define` constant; tests/security/hitl/bypass-refused-in-prod.test.ts verifies the prod-bundle invariant."
+
+# ── Coverage check: every FR/NFR → at least one task ───────────────────
+coverage_check:
+  functional_requirements:
+    FR-1:  [T6.1, T6.2]
+    FR-2:  [T3.1, T3.3]
+    FR-3:  [T4.1, T4.2, T4.3, T4.4]
+    FR-4:  [T2.3, T2.4]
+    FR-5:  [T2.3, T6.1]
+    FR-6:  [T3.1, T3.3]
+    FR-7:  [T3.2]
+    FR-8:  [T1.1]               # errors.ts; per-error code tested across P11
+    FR-9:  [T9.1, T9.2]
+    FR-10: [T7.1, T7.2]         # amended FR-10
+    FR-11: [T2.3]               # sanitize.ts allowlist
+    FR-12: [T11.1]              # ApprovalDriver — added via test harness file at integration tier
+    FR-13: [T8.1]
+    FR-14: [T8.2]
+    FR-15: [T10.1, T10.2]
+  non_functional_requirements:
+    NFR-1:  [T11.2]             # perf benchmark in coverage run
+    NFR-2:  [T3.3]
+    NFR-3:  [T2.1, T2.2, T2.3, T2.4]
+    NFR-4:  [T3.4]
+    NFR-5:  [T9.1]
+    NFR-6:  [T7.1]
+    NFR-7:  [T2.3]              # human_readable_summary in envelope shape
+    NFR-8:  [T4.3, T11.1]       # webhook retry + chaos/notifier-failure test
+    NFR-9:  [T4.3, T11.1]       # HMAC + replay-defense test
+    NFR-10: [T3.2, T11.1]       # WAL + concurrent-pendings test
+    NFR-11: [T7.3]              # retention policy
+    NFR-12: [T5.1, T5.2]
+  constraints:
+    CON-1: [T2.4]               # VERITAS reuse
+    CON-2: [T3.2, T7.1]         # SQLite only
+    CON-3: [T5.1]               # amended — sidecar + stdio-only test
+    CON-4: [T1.2]               # licensing — package deps respect Apache 2.0 boundary
+    CON-5: [T7.2]               # cross-anchor instead of cross-import
+    CON-6: [T8.1]               # paybot_pay_status feeds BP-3.3
+    CON-7: [_lands_before_bp32]
+    CON-8: [_documented_in_adr_BP_001]  # cap-token interaction carved in ADR
+    CON-9: [T2.3]               # JWS(EdDSA) wire format
+  # No uncovered FR/NFR/CON detected at plan time.
+
+# ── Open spec-level questions surfaced during planning ────────────────
+# These do NOT block @dev start, but @pm should triage them before mid-implementation.
+spec_questions_for_pm:
+  - id: SQ-1
+    question: |
+      Build-time ALLOW_BYPASS injection mechanism is not spec'd. T9.1 proposes
+      esbuild/tsc `define`. @pm: confirm this is acceptable or document an
+      alternative (e.g., separate prod build script with a literal constant file).
+    impact: "Affects T9.1 ALLOW_BYPASS=false invariant in prod bundle."
+  - id: SQ-2
+    question: |
+      MCP host caller-identity contract (FR-14 HARDENED) is opaque — spec says
+      'host MUST pass verifiable caller identity' without specifying the wire
+      shape. Is this a contract paybot publishes, or a Claude-Desktop-specific
+      adapter? Production hosts beyond Claude Desktop need a defined surface.
+    impact: "Affects T8.2 + downstream FR-14 test coverage. Stub adapter ships for demo; production-grade requires this resolution."
+  - id: SQ-3
+    question: |
+      Core-side audit_event_id in pay() response (cross-anchor seed for T7.2) —
+      is this a paybot-core deliverable in the BP-3.1 sprint, or does it land
+      separately in BP-3.3? Plan assumes graceful degrade ('PENDING') if absent.
+    impact: "Affects T7.2 acceptance test and chain integrity story for bank."
+  - id: SQ-4
+    question: |
+      Vitest coverage is currently global. T11.2 scopes lines ≥80% to
+      `src/middleware/hitl/**` only. Confirm scoped threshold is acceptable
+      (rest of repo unchanged) or require global threshold lift.
+    impact: "Affects @qa veto criterion."
+
+# ── Parallelization plan ──────────────────────────────────────────────
+# Critical path: P1 → P2 → P3 → P4 → P5 → P6 → P11
+# Critical-path estimate: 1.0 + 2.5 + 2.5 + 3.5 + 2.0 + 2.0 + 2.5 = 16.0 h
+# Parallel opportunity: P7-audit-chain (2.0h) runs alongside P4/P5 once P2 done.
+# Parallel opportunity: P8-tools-aux + P9-bypass (1.5+1.0h) run alongside P6/P11.
+# Parallel opportunity: P10-verifier-kit (1.5h) runs alongside P11 once P7 done.
+# Single-developer serial total: 22.0h. With 2 devs and clean parallelization: ~14h wall-clock.
+
+# ── Phase ordering visualization ──────────────────────────────────────
+#  P1 ──► P2 ──► P3 ──► P4 ──► P5 ──► P6 ──┬──► P11
+#         │      │              │           │
+#         └──────┴──► P7 ───────┘   ┌──► P8 │
+#                    │              ├──► P9 │
+#                    └──► P10 ──────┘       │
+#                                            ▼
+#                                         (gate: @qa)
+
+# ── Readiness verdict ─────────────────────────────────────────────────
+ready_for_dev: true
+ready_for_dev_rationale: |
+  All FRs and NFRs map to at least one task. Critical-path well-defined.
+  Risks identified with mitigations. Cross-repo dependencies enumerated with
+  owners. Test paths concrete (matches spec §11 1:1). Coverage gate explicit.
+  Open spec questions are non-blocking for @dev to start P1-P5; SQ-2 and SQ-3
+  must resolve before P7.2 and P8.2 complete.
+
+  Single caveat: 22h estimate vs 5h epic AC is a real gap. Recommend @pm
+  surface to operator for epic-AC update OR descope decision (e.g., stdio-only
+  in v0.3, webhook+http-poll in v0.3.1).
