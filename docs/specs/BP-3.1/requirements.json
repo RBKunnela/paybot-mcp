@@ -1,0 +1,303 @@
+{
+  "story_id": "BP-3.1",
+  "title": "HITL Middleware for MCP Money-Moving Tools",
+  "epic": "EPIC-BANK-3",
+  "repo": "paybot-mcp",
+  "complexity_class": "COMPLEX",
+  "complexity_score": 17,
+  "complexity_dimensions": {
+    "scope": 4,
+    "integration": 3,
+    "infrastructure": 3,
+    "knowledge": 3,
+    "risk": 4
+  },
+  "spec_pipeline": {
+    "phase": "1-gather",
+    "author_agent": "@pm (Morgan)",
+    "convoked_by": "@aiox-master",
+    "produced_at": "2026-05-20",
+    "next_phases": ["2-assess (@architect)", "3-research (@analyst — in parallel)", "4-write-spec (@pm)", "5-critique (@qa)", "6-plan (@architect)"]
+  },
+  "stakeholders": [
+    {"id": "OP", "name": "Operator (Renata)", "role": "Human approver in the loop; configures channel, timeouts, quorum"},
+    {"id": "LLM", "name": "LLM agent (Claude / MCP client)", "role": "Caller of money-moving tools; blocks on approval; must receive deterministic error model"},
+    {"id": "BANK", "name": "Bank reviewer (FIN-FSA / Nordea diligence)", "role": "Audits that no payment ever settled without a signed human approval envelope"},
+    {"id": "AUD", "name": "Post-incident auditor", "role": "Reconstructs the approval chain for any tx via paybot_audit_excerpt"},
+    {"id": "DEV", "name": "Integrator / bank IT", "role": "Plugs in their preferred notifier channel (webhook to internal console, http-poll for air-gapped)"}
+  ],
+
+  "functional_requirements": [
+    {
+      "id": "FR-1",
+      "description": "Middleware MUST wrap every registered money-moving MCP tool (initial scope: paybot_pay, paybot_pay_eur; future-extensible to paybot_register above trust tier 1, paybot_subscription_create). Wrapping is declarative: a tool registers via wrapWithHitl(handler, policy) so tool authors cannot accidentally bypass.",
+      "source": "epic AC #1 (BP-3.1) + architect §2"
+    },
+    {
+      "id": "FR-2",
+      "description": "Middleware MUST implement the 5-state machine: pending → approved → executed | rejected (terminal) | failed | timeout (terminal). All transitions MUST be persisted (FR-7) before being acted on. No transition fires without a persisted record.",
+      "source": "architect §2 state machine"
+    },
+    {
+      "id": "FR-3",
+      "description": "Middleware MUST support 3 notifier channels selected by env PAYBOT_MCP_APPROVAL_CHANNEL ∈ {stdio, webhook, http-poll}. Channel API: ApprovalNotifier.notify(envelope) → Promise<void>; ApprovalNotifier.poll(requestId) for http-poll. Channels MUST be pluggable (interface-based, not hard-coded).",
+      "source": "architect §2 operator surface"
+    },
+    {
+      "id": "FR-4",
+      "description": "Middleware MUST produce a VERITAS-signed ApprovalEnvelope = { request_id, tool_name, sanitized_params (recipient, amount, network, asset), requested_at, decided_at, decision, operator_id, channel, expiry }. Signature = ed25519_sign(VERITAS_KEY_PAYBOT_MCP, canonical_json(envelope)). MUST reuse the existing VERITAS signer (no new signing scheme).",
+      "source": "architect §2 VERITAS reuse + memory: project_veritas_three_chains_live"
+    },
+    {
+      "id": "FR-5",
+      "description": "On approval, middleware MUST forward the signed envelope to paybot-core via HTTP header X-Paybot-Approval-Envelope so core can verify against the same VERITAS key registry and refuse settlement if header is missing or signature invalid.",
+      "source": "architect §2 — settlement-side enforcement"
+    },
+    {
+      "id": "FR-6",
+      "description": "Middleware MUST expose a tiered timeout policy: (a) T_a per-channel default (stdio 60s, webhook 5min, http-poll 10min) configurable via PAYBOT_MCP_HITL_TA_<CHANNEL>_MS; (b) T_b absolute hard ceiling 5min (configurable PAYBOT_MCP_HITL_TB_MS); (c) NEW — large-amount escalation tier T_c (default 72h / 3 days) routes synchronous tool call to immediate HITL_DURABLE_PENDING return with deferred settle when threshold (default 100 EUR/USD configurable PAYBOT_MCP_HITL_DURABLE_THRESHOLD) is exceeded. Tiering reconciles epic AC #2 (3-day default) with architect §2 (60s-10min defaults).",
+      "source": "epic AC #2 + architect §2 + NEW (resolves PM-flagged tension)"
+    },
+    {
+      "id": "FR-7",
+      "description": "Middleware MUST persist approval state at paybot-mcp/.state/approvals.sqlite (gitignored, restart-safe). Schema: approvals(request_id PK, tool_name, sanitized_params_json, state, requested_at, decided_at, operator_id, channel, envelope_json, signature, durable BOOL). On MCP server restart, in-flight pending approvals MUST be reloadable and resumable (idempotent — same request_id → same envelope).",
+      "source": "architect §2 + NEW (explicit restart-safety AC)"
+    },
+    {
+      "id": "FR-8",
+      "description": "Middleware MUST surface a deterministic error model to the LLM: HITL_PENDING (still waiting, only emitted if caller requested non-blocking mode — out of scope v1, reserve namespace), HITL_TIMEOUT (T_a or T_b exceeded), HITL_REJECTED (operator denied), HITL_DURABLE_PENDING (large-amount tier, settle deferred, request_id returned for polling), HITL_BYPASSED (HITL_BYPASS=true was set; audit-chain entry recorded). Errors MUST be typed MCP tool errors with structured fields {code, request_id, envelope?, retry_after_ms?}.",
+      "source": "epic AC #2 + architect §2 + NEW (HITL_DURABLE_PENDING from FR-6)"
+    },
+    {
+      "id": "FR-9",
+      "description": "Middleware MUST support a bypass mode for demos and break-glass operations: HITL_BYPASS=true env var enables bypass, BUT bypass MUST (a) require additional env HITL_BYPASS_OPERATOR_ID; (b) record a VERITAS-signed BypassEnvelope in the audit chain BEFORE the tool executes; (c) tag the resulting payment as bypassed=true in the audit excerpt so bank reviewers see bypasses as explicit, not hidden.",
+      "source": "epic AC #3 + architect §2 + memory: feedback_credentials_masking (no silent overrides)"
+    },
+    {
+      "id": "FR-10",
+      "description": "Middleware MUST integrate with the paybot-core audit hash-chain (src/audit/hash-chain.ts) so every approval envelope is a hash-chain entry retrievable via paybot_audit_excerpt (BP-3.3). Linkage: ApprovalEnvelope.request_id is referenced from the settlement audit event so 'show me the human approval for tx X' returns one signed envelope linked to the chain entry.",
+      "source": "architect §2 + architect §3 audit excerpt + BP-3.3 cross-story dep"
+    },
+    {
+      "id": "FR-11",
+      "description": "Middleware MUST sanitize parameters in the envelope before signing: include only {recipient, amount, network, asset, resource}; strip any apiKey, walletPrivateKey, botId-internal-state, request headers. Sanitization is enforced by an allowlist (not denylist) so future params default to excluded.",
+      "source": "NEW (security hardening — prevent secret leak into signed/audit-visible envelopes)"
+    },
+    {
+      "id": "FR-12",
+      "description": "Middleware MUST provide a programmatic ApprovalDriver interface for tests and E2E (BP-5.2): driver.approve(requestId, operatorId), driver.reject(requestId, operatorId, reason), driver.simulateTimeout(requestId). The driver is gated by NODE_ENV=test || PAYBOT_MCP_APPROVAL_DRIVER=test to prevent production exposure.",
+      "source": "BP-5.2 AC + NEW (testability requirement)"
+    }
+  ],
+
+  "non_functional_requirements": [
+    {
+      "id": "NFR-1",
+      "category": "performance",
+      "description": "Middleware overhead per approval cycle MUST NOT exceed 50ms (excluding human wait time and notifier I/O). Measured: from wrapWithHitl invocation to ApprovalEnvelope persisted in approvals.sqlite.",
+      "measurable_target": "p95 < 50ms, p99 < 100ms on local SQLite; benchmark added to tests/bench/"
+    },
+    {
+      "id": "NFR-2",
+      "category": "performance",
+      "description": "Synchronous tool call latency for the LLM caller MUST be bounded by T_a (channel-specific) or surfaced via HITL_DURABLE_PENDING immediately (≤200ms) for amounts ≥ T_c threshold — no LLM call EVER blocks longer than T_b (5min hard ceiling).",
+      "measurable_target": "100% of tool calls return within max(T_a, 200ms) for non-durable, ≤200ms for durable-tier returns"
+    },
+    {
+      "id": "NFR-3",
+      "category": "security",
+      "description": "All ApprovalEnvelopes and BypassEnvelopes MUST be Ed25519-signed using VERITAS_KEY_PAYBOT_MCP. Signature verification MUST round-trip against the published public key (test asserts this). Timestamp normalization MUST follow VERITAS rules (parse-and-re-emit before signing) to avoid Postgres timestamptz trailing-zero drift.",
+      "measurable_target": "100% of envelopes verifiable; zero signature mismatches in 1000-envelope fuzz test",
+      "source_memory": "feedback_veritas_timestamp_normalization"
+    },
+    {
+      "id": "NFR-4",
+      "category": "reliability",
+      "description": "Restart-safety: if MCP server crashes mid-approval, on restart all pending approvals with requested_at within T_b MUST be reloaded into in-memory state and re-attached to their notifier channel. Approvals past T_b MUST transition to timeout on restart.",
+      "measurable_target": "Test: kill -9 mid-flight; restart; verify pending approvals resume; verify aged approvals time out; zero phantom-pending leaks"
+    },
+    {
+      "id": "NFR-5",
+      "category": "security",
+      "description": "Bypass mode MUST NOT be enableable in production builds without explicit operator action: env var alone is insufficient; bypass MUST also be gated by a build flag PAYBOT_MCP_ALLOW_BYPASS=true at compile/install time. Default builds shipped to bank pilot MUST have bypass compiled out.",
+      "measurable_target": "Production bundle includes a build-time assertion: if (BYPASS_ALLOWED !== 'true') throw on HITL_BYPASS=true env at boot"
+    },
+    {
+      "id": "NFR-6",
+      "category": "compliance",
+      "description": "Audit completeness: 100% of tool invocations that touch the middleware MUST produce at least one audit-chain entry (approved | rejected | timeout | bypassed). No code path may settle a payment without a corresponding signed envelope hash-chained.",
+      "measurable_target": "Property-based test: 1000 randomized tool invocations → 1000 hash-chain entries linked to settlements (or rejections/timeouts); zero orphan settlements"
+    },
+    {
+      "id": "NFR-7",
+      "category": "usability",
+      "description": "Non-technical operators (Renata's bank pilot) MUST be able to approve via webhook console with a single click; envelope MUST display human-readable summary: 'Approve payment of 47.50 EUR to 0xabc...def via Base mainnet for resource X?' — NOT raw JSON.",
+      "measurable_target": "Webhook payload includes human_readable_summary field; UX validated by Renata before pilot (qualitative gate)"
+    },
+    {
+      "id": "NFR-8",
+      "category": "reliability",
+      "description": "Notifier failures MUST NOT prevent approval recording: if notify() throws (network down, webhook 500), the approval remains pending in approvals.sqlite and the system retries (exponential backoff, max 5 attempts, then timeout path). Notifier errors are best-effort observability, never blockers.",
+      "measurable_target": "Chaos test: simulate 50% notifier failure rate; assert 100% of approvals reach a terminal state via timeout or retry-success"
+    },
+    {
+      "id": "NFR-9",
+      "category": "security",
+      "description": "Replay-resistance: ApprovalEnvelopes MUST include request_id (UUIDv7, time-ordered) AND expiry; core MUST reject envelopes whose request_id has been seen before OR whose expiry < now. Idempotency-key contract from BP-2.1 reused for the core-side replay window.",
+      "measurable_target": "Replay test: re-submit a used envelope → core returns 409; expired envelope → core returns 410. Both tested in integration suite."
+    },
+    {
+      "id": "NFR-10",
+      "category": "performance",
+      "description": "SQLite approvals store MUST handle ≥100 concurrent pending approvals without lock contention (better-sqlite3 WAL mode). Cleanup job MUST purge terminal-state approvals older than 30 days to bound store size.",
+      "measurable_target": "Stress test: 100 concurrent approvals; zero SQLITE_BUSY errors; store size bounded ≤10MB over 90-day simulation"
+    }
+  ],
+
+  "constraints": [
+    {
+      "id": "CON-1",
+      "description": "MUST reuse existing VERITAS Ed25519 signer (Helena, ALMA, paybot-TS chains live). MUST NOT introduce a new signing scheme, key registry, or canonicalization protocol.",
+      "source": "architect §2 + memory: project_veritas_three_chains_live + ADR-BP-002"
+    },
+    {
+      "id": "CON-2",
+      "description": "MUST NOT add a database in paybot-mcp beyond local SQLite at .state/approvals.sqlite. No external DB dependency (no Postgres, no Redis). MCP server must remain a self-contained npm package consumable by Claude Desktop.",
+      "source": "OPEN-CORE-BOUNDARY-MAP §5 + architect §2 persistence choice"
+    },
+    {
+      "id": "CON-3",
+      "description": "MUST work over MCP stdio transport (Claude Desktop primary delivery channel). Cannot assume HTTP server is running on the MCP side; stdio notifier MUST function with only stdin/stdout available.",
+      "source": "MCP protocol + Claude Desktop deployment target (architect §2 channel: stdio)"
+    },
+    {
+      "id": "CON-4",
+      "description": "MUST respect open-core licensing: paybot-mcp is Apache 2.0, paybot-sdk is MIT, paybot-core is BSL 1.1. Middleware logic in paybot-mcp MUST NOT contain MiCA/AML/EUR-specific rules. Generic approval-gate only; business rules stay in core.",
+      "source": "AGENT-ECONOMY-MCP-GAPS.md open-core discipline section"
+    },
+    {
+      "id": "CON-5",
+      "description": "MUST NOT cross-import paybot-core. paybot-mcp depends only on paybot-sdk; settlement-side envelope verification lives in core and is invoked via the signed HTTP header (FR-5), not a shared library.",
+      "source": "architect §1 cross-repo dependency map (one-way arrow)"
+    },
+    {
+      "id": "CON-6",
+      "description": "MUST integrate with BP-3.3 paybot_audit_excerpt: every ApprovalEnvelope MUST be retrievable by the same request_id used as the audit-chain linkage key. Schema alignment with BP-3.3 audit-excerpt format is a hard contract, not a soft suggestion.",
+      "source": "epic BP-3.3 + architect §3"
+    },
+    {
+      "id": "CON-7",
+      "description": "MUST land BEFORE BP-3.2 (paybot_pay_eur) — BP-3.2 acceptance criteria explicitly state 'wrapped in HITL middleware (BP-3.1)'. Critical-path dependency.",
+      "source": "epic critical_path + BP-3.2 AC #2"
+    }
+  ],
+
+  "open_questions": [
+    {
+      "id": "OQ-1",
+      "question": "Tiered timeout policy (FR-6 + FR-8): is the 3-tier scheme (T_a channel-default 60s-10min / T_b 5min hard / T_c durable 72h for amounts ≥ threshold) acceptable? This NEW design reconciles epic AC #2 (3-day default) with architect §2 (60s-10min defaults) by treating them as different use cases (synchronous small-tx vs durable large-tx). Without this resolution, BP-3.1 cannot be specced — the contradiction is structural.",
+      "blocker_severity": "high",
+      "needs_decision_from": "architect (design vet) + operator (threshold value 100 EUR default) + analyst (industry benchmark research)",
+      "marked_NEW": true,
+      "recommended_resolution": "Adopt tiered scheme; analyst to research operator-on-email approval SLAs at adjacent FinTechs; architect to ratify in ADR-BP-001 amendment before Phase 4 spec writing."
+    },
+    {
+      "id": "OQ-2",
+      "question": "Renata's bank-pilot notifier channel: stdio (demo/local), webhook (to which console?), or http-poll? Webhook to Slack/email is fastest to ship but needs an endpoint; http-poll is air-gap-safe but adds latency. Choice affects T_a default selection and which channel gets the most polish in v1.",
+      "blocker_severity": "high",
+      "needs_decision_from": "operator (Renata) + analyst (bank pilot UX research)",
+      "marked_NEW": false,
+      "recommended_resolution": "Default to webhook → Slack DM for pilot (Renata is single approver); http-poll as fallback for air-gapped bank install. Stdio reserved for demo recordings."
+    },
+    {
+      "id": "OQ-3",
+      "question": "Interaction with ADR-BP-006 (capability tokens): does each approval envelope ALSO require a capability-token scope check, or does the HITL gate supersede capability-token enforcement for money-moving tools? Current ADR-BP-006 is not yet drafted (verified: no file matches D:\\1.GITHUB\\paybot\\docs\\architecture\\adrs\\ADR-BP-006*). Risk: middleware ships and then BP-006 lands with a redundant or conflicting auth check.",
+      "blocker_severity": "high",
+      "needs_decision_from": "architect (must draft ADR-BP-006 before BP-3.1 implementation, or carve out an explicit 'HITL is sufficient for v1' clause)",
+      "marked_NEW": false,
+      "recommended_resolution": "@architect drafts ADR-BP-006 by 2026-05-25 (3 days from now) with explicit HITL-vs-cap-token interaction clause; BP-3.1 implementation gated on that ADR landing."
+    },
+    {
+      "id": "OQ-4",
+      "question": "Replay-attack defense (NFR-9): is request_id + expiry sufficient, or do we need a server-side nonce store with persistent replay protection across MCP-server restarts? Current FR-7 persists envelopes locally; replay protection on the core side is the actual enforcement point.",
+      "blocker_severity": "medium",
+      "needs_decision_from": "architect + @data-engineer (core-side nonce store schema)",
+      "marked_NEW": true,
+      "recommended_resolution": "Core maintains a 30-day rolling nonce store keyed by request_id; mcp-side persistence is for resumability, core-side is for security. Document the dual responsibility in ADR-BP-002."
+    },
+    {
+      "id": "OQ-5",
+      "question": "Multi-operator approval quorum: must some payment classes (e.g., > 10k EUR, or all of paybot_register at tier 3+) require N-of-M operator approvals? Banks routinely require dual approval for high-value tx. Current design supports single operator only.",
+      "blocker_severity": "medium",
+      "needs_decision_from": "operator (Renata — solo pilot, deferrable) + bank reviewer (will FIN-FSA demand this?)",
+      "marked_NEW": true,
+      "recommended_resolution": "Out of scope for v1 (BP-3.1); design FR-6 tier T_c hooks so a future N-of-M extension fits without breaking. Capture as follow-up story BP-3.1b for post-pitch."
+    },
+    {
+      "id": "OQ-6",
+      "question": "Audit-chain coupling: BP-3.3 (paybot_audit_excerpt) is parallel work in this epic. Does FR-10 require BP-3.3 to land first, or can BP-3.1 ship with envelopes written to paybot-core/src/audit/hash-chain.ts directly and BP-3.3 later expose them? Sequencing affects the 2026-06-06 target completion.",
+      "blocker_severity": "medium",
+      "needs_decision_from": "architect (cross-story sequencing) + @sm (story slicing)",
+      "marked_NEW": false,
+      "recommended_resolution": "BP-3.1 writes hash-chain entries via core HTTP API (existing surface); BP-3.3 exposes them. Decoupled — BP-3.1 does not block on BP-3.3."
+    },
+    {
+      "id": "OQ-7",
+      "question": "Operator identity binding: how is operator_id authenticated when an approval arrives via webhook? Webhook receives a signed payload from the console — but who signs? Bank pilot must not trust an unsigned webhook callback as proof-of-approval.",
+      "blocker_severity": "high",
+      "needs_decision_from": "architect (webhook auth model) + operator (Renata's identity-provider choice for pilot)",
+      "marked_NEW": true,
+      "recommended_resolution": "Webhook callback MUST carry HMAC-SHA256 signature with shared secret PAYBOT_MCP_WEBHOOK_SECRET; operator_id is included in the signed payload. For pilot, secret is a 256-bit random per-install value Renata configures."
+    },
+    {
+      "id": "OQ-8",
+      "question": "Failure mode when VERITAS signing fails (key missing, key rotation mid-flight): default fail-closed (reject the approval) or fail-open (log warning, proceed without envelope)? Mirrors the AML fail-open vs fail-closed debate in ADR-BP-008.",
+      "blocker_severity": "medium",
+      "needs_decision_from": "architect (must explicitly choose fail-closed per ADR-BP-008 stance) + @qa (regression test for both modes)",
+      "marked_NEW": true,
+      "recommended_resolution": "Fail-closed by default (rename pattern from ADR-BP-008 applied here). Approval cannot proceed without a valid signed envelope; emit a typed error VERITAS_SIGNER_UNAVAILABLE."
+    }
+  ],
+
+  "out_of_scope": [
+    "Multi-operator N-of-M quorum approval (OQ-5 deferred to BP-3.1b post-pitch)",
+    "Asynchronous LLM-side callback for HITL_DURABLE_PENDING (LLM polls via separate tool, no push notification to LLM)",
+    "Operator console UI implementation (notifier channels are contracts; building the Slack bot / web console is separate work, possibly BP-4.x)",
+    "Approval delegation / approver hierarchies (operator A delegates to operator B)",
+    "Approval revocation after approval but before settlement (within T_b window — currently irrevocable once approved)",
+    "Cross-MCP-server approval propagation (each MCP server has its own approvals.sqlite; clustering deferred)",
+    "Approval-based trust-tier promotion (separate flow under BP-3.5 paybot_identity; HITL is for money-moving only)"
+  ],
+
+  "success_criteria": [
+    "A bank reviewer can demand 'show me the human approval for tx X' and receive ONE signed VERITAS Ed25519 envelope, verifiable offline against the published public key, hash-chained to the settlement audit entry — zero exceptions across 100% of bank-pilot payments",
+    "The LLM agent CANNOT trigger a money-moving tool execution without either (a) a valid signed ApprovalEnvelope OR (b) a signed BypassEnvelope with HITL_BYPASS=true + recorded operator_id — enforced by core-side header verification (FR-5), not just MCP-side trust",
+    "BP-5.2 E2E HITL approval-path validation passes: approval received within T_a → settlement proceeds with envelope linked; rejection → HITL_REJECTED returned, no on-chain action; timeout → HITL_TIMEOUT returned, audit chain records the timeout",
+    "Restart-safety verified: kill -9 mid-approval → restart MCP server → in-flight approvals resume; aged approvals timeout cleanly; no phantom-pending or double-spend",
+    "Per-channel timeout defaults (T_a) are operator-configurable and surface visibly in mcp-server boot logs — Renata's pilot can tune them without code changes; bank reviewers see the configured values in the deployment manifest"
+  ],
+
+  "trace_to_epic_ac": {
+    "epic_AC_1": {
+      "text": "src/middleware/hitl.ts wraps any tool handler; emits approval-required event with tool name + args; blocks until approval token returned OR --no-hitl env override set",
+      "covered_by": ["FR-1", "FR-2", "FR-3", "FR-8"]
+    },
+    "epic_AC_2": {
+      "text": "Approval timeout configurable (default 3 days per testing-agent SOP); on timeout → tool returns HITL_TIMEOUT error",
+      "covered_by": ["FR-6 (tiered policy resolves the 3-day vs minutes tension)", "FR-8 (HITL_TIMEOUT in error model)"],
+      "resolution_note": "Epic AC #2 'default 3 days' applies to the durable tier (T_c, large amounts); per-channel synchronous defaults (T_a) are 60s/5min/10min per architect §2. See OQ-1."
+    },
+    "epic_AC_3": {
+      "text": "HITL bypass requires HITL_BYPASS=true env var AND audit-chain entry recording the bypass + operator id",
+      "covered_by": ["FR-9", "NFR-5"]
+    }
+  },
+
+  "memory_anchors": [
+    "project_veritas_three_chains_live (2026-05-10) — VERITAS Ed25519 chains live in Helena/ALMA/paybot-TS; reuse this signer",
+    "feedback_veritas_timestamp_normalization (2026-05-10) — round-trip parse-and-re-emit before signing",
+    "feedback_testing_agent_sop — HITL approval loop + 3-day escalation is DEFAULT for testing agents; epic AC #2 inherits this pattern but BP-3.1 reframes for payment semantics",
+    "feedback_credentials_masking (2026-05-10) — never expose secrets; envelope sanitization allowlist (FR-11)",
+    "feedback_idempotent_resource_creation — replay protection NFR-9 aligns with this rule"
+  ]
+}

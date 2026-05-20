@@ -1,0 +1,330 @@
+{
+  "story_id": "BP-3.1",
+  "research_date": "2026-05-20",
+  "analyst": "AIOX Analyst (Alex)",
+  "scope": "HITL patterns for LLM-mediated financial actions — applied to paybot-mcp `paybot_pay` / `paybot_pay_eur` gating before Nordic-bank pitch 2026-06-16",
+  "confidence_overall": "MEDIUM-HIGH",
+  "confidence_notes": "MCP elicitation spec, LangGraph interrupt, Step Functions waitForTaskToken, Temporal signals, and Vercel AI SDK 6 needsApproval are well-documented current-state facts. DORA Article 28 mapping to HITL is interpretive — no RTS explicitly names HITL; the link is via ICT third-party audit/log/exit-plan obligations that the gate is incidentally invoked from. Treat the DORA recommendations as a defensible reading of Article 28 + Articles 5–14 (governance + ICT risk), not a literal regulatory checklist.",
+
+  "categories": {
+    "existing_libraries": [
+      {
+        "name": "LangGraph interrupt() + Command",
+        "url": "https://docs.langchain.com/oss/python/langgraph/interrupts",
+        "what_it_does": "Pauses a graph execution mid-tool-call via interrupt(); state is persisted by a checkpointer; resumes via Command after human decision (approve / reject / edit). interrupt_before pauses immediately before a named tool.",
+        "fit_for_paybot": "high",
+        "license": "MIT (langgraph-python, langgraph-js)",
+        "notes": "Best in-process fit if paybot eventually runs the agent loop. For an MCP server boundary the agent is in another process, so interrupt() lives client-side — paybot still has to enforce the gate server-side. Useful as a reference design more than as a runtime dependency for paybot-mcp."
+      },
+      {
+        "name": "AWS Step Functions waitForTaskToken (.sync:2 callback)",
+        "url": "https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html",
+        "what_it_does": "State machine issues a TaskToken, pauses, and resumes when an external caller invokes SendTaskSuccess / SendTaskFailure with that token. Native TimeoutSeconds and HeartbeatSeconds. Banking-grade audit via CloudWatch + EventBridge.",
+        "fit_for_paybot": "medium",
+        "license": "AWS proprietary (SaaS)",
+        "notes": "Architectural model maps 1:1 onto paybot's pending→approved/rejected/timeout state machine. Adopting the *pattern* is high-value; adopting the *service* adds an AWS dependency that hurts the air-gapped pilot channel."
+      },
+      {
+        "name": "Temporal signals + Update + durable timers",
+        "url": "https://docs.temporal.io/ai-cookbook/human-in-the-loop-python",
+        "what_it_does": "Workflow blocks on a Signal (or Update) from outside. Approval is durably persisted before signal returns. Survives worker crashes / multi-day waits. Native HITL-MCP tutorial exists.",
+        "fit_for_paybot": "medium",
+        "license": "Apache 2.0 (self-host) or Temporal Cloud (SaaS)",
+        "notes": "Strongest match for the *http-poll air-gapped* channel and *webhook* channel because durability across days is the killer feature. Heavy infra cost (worker fleet, Temporal cluster). Recommend as v2 backend behind the same state machine."
+      },
+      {
+        "name": "Inngest step.waitForEvent + Realtime",
+        "url": "https://www.inngest.com/docs/features/inngest-functions/steps-workflows/wait-for-event",
+        "what_it_does": "Function pauses on waitForEvent until matching event arrives; Realtime streams the pending state to a UI. CEL expressions for matching.",
+        "fit_for_paybot": "low",
+        "license": "Apache 2.0 (self-host) or Inngest Cloud",
+        "notes": "Same pattern as Temporal but lighter; less proven in regulated fintech. Useful as a `webhook` channel backend if paybot wants TS-native infra."
+      },
+      {
+        "name": "Trigger.dev waitpoint tokens (v3+)",
+        "url": "https://trigger.dev/docs/guides/example-projects/human-in-the-loop-workflow",
+        "what_it_does": "Task pauses on a waitpoint token; external system resolves token to continue. Built-in ReactFlow HITL example.",
+        "fit_for_paybot": "low",
+        "license": "Apache 2.0",
+        "notes": "Newer than Temporal/Inngest; smaller ecosystem; OK reference design."
+      },
+      {
+        "name": "Vercel AI SDK 6 needsApproval",
+        "url": "https://vercel.com/blog/ai-sdk-6",
+        "what_it_does": "Per-tool flag that suspends tool execution until the client approves via the chat UI. Released 2026.",
+        "fit_for_paybot": "negative",
+        "license": "Apache 2.0",
+        "notes": "Client-side gate only — runs in the LLM host process. Useless as the *enforcement* mechanism for paybot because the bot operator must not trust the agent to honor it. paybot-mcp must enforce server-side regardless of what the host does. Worth advertising client-side as a defense-in-depth nicety."
+      },
+      {
+        "name": "LangChain HumanInputChain",
+        "url": "https://docs.langchain.com/oss/python/langgraph/interrupts",
+        "what_it_does": "Legacy chain that prompts via stdin for human input.",
+        "fit_for_paybot": "negative",
+        "license": "MIT",
+        "notes": "Superseded by LangGraph interrupt(). Stdin-only. Not relevant."
+      }
+    ],
+
+    "mcp_specific_patterns": [
+      {
+        "pattern": "MCP Elicitation (server-initiated user request)",
+        "source": "MCP spec (draft, modelcontextprotocol.io/specification/draft/client/elicitation)",
+        "applicability": "DIRECT FIT. The MCP spec already defines `elicitation/create` — server asks client to surface a prompt to the user. Supports form mode (structured fields) and URL mode (out-of-band redirect, mandatory for sensitive flows including payments per spec). paybot can use elicitation to surface the pending payment to the host, then the host renders it in chat / opens an OAuth-style approval window.",
+        "spec_url": "https://modelcontextprotocol.io/specification/draft/client/elicitation"
+      },
+      {
+        "pattern": "MCP human-in-the-loop principle (architectural)",
+        "source": "Anthropic MCP spec design notes",
+        "applicability": "MCP is *explicitly designed* around the assumption that consequential tool calls are reviewed by a human before execution. The latency cost of a confirmation prompt is an accepted design constraint. This is paybot's friend — MCP hosts (Claude Desktop, Claude Code, ChatGPT) expect this latency."
+      },
+      {
+        "pattern": "URL-mode elicitation for payment credentials/auth",
+        "source": "MCP spec",
+        "applicability": "MANDATORY per spec when interaction involves payment credentials or sensitive secrets. paybot's webhook channel naturally lands here — the operator console URL is the URL-mode target."
+      },
+      {
+        "pattern": "Stateful MCP client (Amazon Bedrock AgentCore Runtime)",
+        "source": "AWS blog 2026 — community example",
+        "applicability": "Demonstrates that production MCP hosts already support pause/resume around tool calls; paybot's `pending` state will be recognized correctly by mature hosts."
+      },
+      {
+        "pattern": "No standard 'approval envelope' format in MCP itself",
+        "source": "Gap analysis of current spec",
+        "applicability": "MCP defines *how to ask* (elicitation) but not *how to prove a human approved*. The signed envelope (VERITAS Ed25519) is paybot's contribution — fills a real spec gap. Worth describing as a candidate MCP extension in the bank pitch."
+      }
+    ],
+
+    "fintech_approval_workflows": [
+      {
+        "vendor_or_pattern": "EU/Nordic Four-Eyes Principle (also: maker-checker, 2-man rule)",
+        "approval_channels": ["bank internal console", "SAP-style workflow inbox", "dedicated treasury console"],
+        "typical_timeouts": "Same-business-day to T+1 for batch payments; minutes for real-time treasury; 2 explicit approvers always required above material thresholds.",
+        "audit_signature_method": "Logged user identity of both approvers, timestamp, action, transaction ID; digital signatures increasingly common (qualified e-signature under eIDAS). Both approvals must be persisted before funds move.",
+        "regulator_acceptance": "Baseline expectation under BCBS Core Principles + 4AMLD/5AMLD/6AMLD; mandated implicitly by ECB SSM and national regulators (FIN-FSA included). MFSA, BaFin, AFM all enforce. Not a 'nice to have' — it is the assumed control."
+      },
+      {
+        "vendor_or_pattern": "PSD2 SCA dynamic linking (Article 97 + RTS Article 5)",
+        "approval_channels": ["app-based push", "SMS OTP", "card reader CAP", "biometric"],
+        "typical_timeouts": "Seconds (user must complete on device); session expiry per RTS.",
+        "audit_signature_method": "Authentication code cryptographically bound to (payee, amount) — any tamper invalidates it. This is *exactly* the property paybot's signed envelope needs.",
+        "regulator_acceptance": "Mandatory across EEA for any consumer-facing electronic payment > €30; PSD3 (entering 2026) extends scope to open banking and non-bank PSPs and tightens dynamic linking."
+      },
+      {
+        "vendor_or_pattern": "Banking treasury workflow systems (Kyriba, SAP TRM, ION Treasury)",
+        "approval_channels": ["web console", "email + click-through", "mobile app push"],
+        "typical_timeouts": "Configurable per policy — typical 4–24h cutoff with auto-reject on timeout.",
+        "audit_signature_method": "User session attestation + immutable audit log; some use HSM-backed signing for the approver action.",
+        "regulator_acceptance": "Audited under SOX / DORA / internal audit; bank-grade."
+      }
+    ],
+
+    "signed_envelope_patterns": [
+      {
+        "scheme": "VERITAS Ed25519 (paybot internal — already live in 3 chains: Helena, ALMA, paybot)",
+        "what_it_signs": "Currently signs audit chain rows. Proposal: extend to sign approval envelopes binding (request_id, operator_id, bot_id, amount, recipient, currency, expiry, nonce).",
+        "verifier_complexity": "Trivial — single Ed25519 verify call; public key already published in the operator's identity record.",
+        "fit": "HIGH. Reuses live infra. Already trusted by the team. Already producing audit chains banks can verify."
+      },
+      {
+        "scheme": "JWS (RFC 7515) with Ed25519 (EdDSA) and `nonce` header",
+        "what_it_signs": "Canonical JSON payload; protected header carries `nonce`, `iat`, `exp`, `kid`. ACME (Let's Encrypt) is the proven production pattern.",
+        "verifier_complexity": "Low; mature libraries in every language.",
+        "fit": "HIGH as a standards-blessed wire format. Recommend wrapping VERITAS envelope *as* a JWS so banks see a familiar IETF artifact instead of a bespoke format. Cost: one extra encoder. Win: dramatically lower 'wtf is this' surface in the pitch."
+      },
+      {
+        "scheme": "COSE (RFC 9052)",
+        "what_it_signs": "CBOR-encoded payload; smaller wire than JWS; common in FIDO2 / passkeys.",
+        "verifier_complexity": "Medium — fewer ecosystem libs than JWS.",
+        "fit": "MEDIUM. Strong for embedded/air-gapped. Less recognizable to bank IT than JWS."
+      },
+      {
+        "scheme": "DKIM-style canonicalization + Ed25519",
+        "what_it_signs": "Email-headers-style; primarily for email auth.",
+        "verifier_complexity": "Medium.",
+        "fit": "LOW. Wrong domain."
+      },
+      {
+        "scheme": "Custom binary",
+        "what_it_signs": "Anything.",
+        "verifier_complexity": "Custom verifier required.",
+        "fit": "NEGATIVE. Banks will ask for a standards reference. Don't."
+      }
+    ],
+
+    "timeout_design": [
+      {
+        "context": "Interactive (LLM blocking, seconds-to-low-minutes)",
+        "examples": "Slack interactive button, Stripe SCA pop-up, MCP elicitation form-mode",
+        "trade_offs": "Pro: simple state model, agent sees a fast yes/no, UX matches consumer payment flows. Con: human must be at the keyboard *now*; useless for overnight batch and back-office approval workflows; LLM context burns while it waits."
+      },
+      {
+        "context": "Durable async (return pending, agent polls or webhook resumes)",
+        "examples": "Step Functions waitForTaskToken (24h-1yr), Temporal signal (multi-day), Inngest waitForEvent, banking 4-eyes overnight cutoff",
+        "trade_offs": "Pro: matches bank practice exactly, survives crashes, supports busy-approver realities. Con: needs a durable store; agent must handle pending-state semantics; harder demo because the 'magic moment' is delayed."
+      },
+      {
+        "context": "Hybrid (short interactive wait, fall back to durable)",
+        "examples": "MCP elicitation with X-second deadline then return 'pending' tool result; client can re-invoke later with the same request_id",
+        "trade_offs": "Pro: best of both — fast path for live-human demos AND realistic back-office path for production. Con: doubles the testing surface; clients must understand pending semantics."
+      }
+    ],
+
+    "replay_attack_defenses": [
+      {
+        "defense": "One-shot envelope bound to request_id",
+        "mechanism": "approval_envelope.payload includes request_id; paybot maintains 'consumed' set keyed by envelope hash; first redemption wins, subsequent ones rejected.",
+        "effectiveness": "HIGHEST. Eliminates replay even if envelope leaks. Required."
+      },
+      {
+        "defense": "Short expiry (`exp` field in payload, signed)",
+        "mechanism": "Envelope rejected if now() > exp. Recommend 10-30 minutes for interactive, configurable up to hours for durable channel.",
+        "effectiveness": "Mandatory complement to one-shot. Bounds the leak window."
+      },
+      {
+        "defense": "Nonce per envelope (server-issued)",
+        "mechanism": "paybot issues a nonce when it transitions to `pending`; the operator console must echo it back in the signed envelope. ACME-style.",
+        "effectiveness": "HIGH. Stops pre-signing attacks where an attacker harvests historical approvals."
+      },
+      {
+        "defense": "Dynamic linking (amount + recipient inside the signed payload)",
+        "mechanism": "Same property PSD2 SCA RTS requires. Any tamper of amount or recipient invalidates the signature.",
+        "effectiveness": "HIGHEST. Stops the 'change-the-recipient' substitution attack. NON-NEGOTIABLE."
+      },
+      {
+        "defense": "TLS channel + envelope binding to TLS exporter",
+        "mechanism": "Bind envelope to the TLS session (RFC 9266 tls-exporter).",
+        "effectiveness": "MEDIUM-HIGH for stdio/webhook; LOW for air-gapped channel where there is no live TLS session. Treat as defense-in-depth, not primary."
+      },
+      {
+        "defense": "Approver key rotation policy",
+        "mechanism": "Operator's Ed25519 key has a stated max age; envelopes signed by a rotated key are rejected.",
+        "effectiveness": "MEDIUM. Limits damage if approver key leaks. Required by DORA-style ICT key management."
+      }
+    ]
+  },
+
+  "regulatory_anchors": [
+    {
+      "regulator": "FIN-FSA (Finanssivalvonta)",
+      "requirement": "Implements EU rules (PSD2/PSD3, AMLD, DORA) at national level. Expects four-eyes / dual control for material payment authority; expects auditable trail of who-approved-what-when for outsourced ICT processes.",
+      "citation": "FIN-FSA Standards 4.4 (operational risk) + national PSD2 implementation (Maksupalvelulaki) + DORA national transposition.",
+      "implications_for_HITL": "HITL gate must record: (operator_identity, approval_timestamp, request_details, signed_artifact, outcome). Recording must be tamper-evident."
+    },
+    {
+      "regulator": "EBA (PSD2 RTS on SCA + dynamic linking)",
+      "requirement": "Article 5 RTS: authentication code dynamically links each transaction to a specific amount and payee; any change invalidates the code. Article 4: two factors from {knowledge, possession, inherence}.",
+      "citation": "Commission Delegated Regulation (EU) 2018/389 (RTS on SCA), Articles 4 and 5.",
+      "implications_for_HITL": "paybot's signed envelope MUST include amount + recipient in the signed payload (dynamic linking). The approver's signing key acts as a 'possession' factor; if combined with operator console login (knowledge or biometric), the gate is structurally SCA-aligned even though the strict SCA rule applies to consumer PSP flows."
+    },
+    {
+      "regulator": "PSD3 / PSR (entering applicability through 2026)",
+      "requirement": "Expands SCA scope, tightens dynamic linking, applies to open banking + non-bank PSPs.",
+      "citation": "Norton Rose Fulbright PSD3 readiness brief; provisional agreement reached 2024, transposition 2026.",
+      "implications_for_HITL": "Strengthens the case that paybot's gate should structurally mirror SCA dynamic linking even if not literally an SCA-regulated entity. Pitch posture: 'we already implement the property PSD3 is widening to require.'"
+    },
+    {
+      "regulator": "DORA (Regulation 2022/2554)",
+      "requirement": "Article 28: ICT third-party arrangements must support audit/inspection rights, exit strategy, and risk-based oversight. Articles 5–14 (governance, ICT risk framework): documented controls over consequential ICT operations.",
+      "citation": "Regulation (EU) 2022/2554; FMA DORA register of information window 2026-02-16 → 2026-03-13.",
+      "implications_for_HITL": "If a Nordic bank uses paybot as an ICT third-party for agent-driven payments, paybot must (a) expose audit logs the bank can inspect, (b) document an exit strategy (revoke the operator key, the bank can rebuild authorization elsewhere), (c) maintain availability SLOs for the gate. The HITL artifact set (signed envelope + audit chain) is the *evidence the bank needs to register paybot in its DORA register*. The gate itself is a control under Article 9 (ICT risk identification + protection)."
+    },
+    {
+      "regulator": "AMLD6 (Sixth Anti-Money Laundering Directive)",
+      "requirement": "Records of transaction approvals + identification of the natural person authorizing transactions; retention typically 5+ years.",
+      "citation": "Directive (EU) 2018/1673; national transpositions vary, Finland: Rahanpesulaki.",
+      "implications_for_HITL": "The signed envelope provides the natural-person identification AML inspectors expect. Retention: paybot must retain at least 5 years."
+    }
+  ],
+
+  "key_findings": [
+    {
+      "finding": "MCP elicitation is the ratified spec hook for HITL — and the spec explicitly mandates URL mode for payment flows.",
+      "impact": "paybot's webhook channel naturally lands in URL-mode elicitation; stdio channel maps to form-mode for the demo. Standards alignment is free — we just need to wire elicitation/create into the pending-state transition.",
+      "recommendation": "Adopt MCP elicitation as the *client-facing* surface. Use URL mode for webhook channel (operator console + Slack). Use form mode for stdio (Claude Desktop demo path)."
+    },
+    {
+      "finding": "MCP spec does NOT define an approval envelope format. This is paybot's whitespace.",
+      "impact": "The signed envelope is a real spec gap. Paybot becomes a reference implementation banks can point to instead of a bespoke vendor format.",
+      "recommendation": "Publish the envelope schema as a candidate MCP extension at pitch time. Wrap as JWS(EdDSA) so it reads as IETF-standard rather than bespoke — banks know JWS from ACME, OIDC, FIDO."
+    },
+    {
+      "finding": "Dynamic linking (amount + recipient inside the signed payload) is the single non-negotiable replay defense — and it's exactly what PSD2/PSD3 SCA requires.",
+      "impact": "Bakes a bank-recognizable control into the gate's wire format. Same property defeats the 'rewrite the recipient' attack class.",
+      "recommendation": "Mandatory in the envelope schema. Reject envelopes where amount/recipient are absent from the signed payload, not just present in the surrounding tool call."
+    },
+    {
+      "finding": "Banking four-eyes is *durable async*, not synchronous. Real approvers do not sit at a keyboard waiting for an LLM agent.",
+      "impact": "Synchronous-only blocking on `paybot_pay` will pitch poorly to bank operations teams who run treasury via cutoff windows.",
+      "recommendation": "Default to hybrid: return `pending` after a short interactive deadline; expose `paybot_pay_status(request_id)` so agents can poll OR be re-invoked by webhook. The state machine pending→approved→executed already supports this — surface it in the MCP tool contract."
+    },
+    {
+      "finding": "Vercel AI SDK 6 needsApproval is client-side only. Useful nicety, NOT a substitute for server-side enforcement.",
+      "impact": "Anyone arguing 'just trust the host to enforce HITL' is wrong. The operator must not rely on the agent honoring it.",
+      "recommendation": "paybot-mcp MUST enforce the gate server-side regardless of host. Document this explicitly in the README to pre-empt the question."
+    },
+    {
+      "finding": "DORA Article 28 + Articles 5–14 turn the HITL gate from a 'nice control' into a piece of bank-mandated ICT third-party evidence.",
+      "impact": "If a Nordic bank wires paybot in, the gate's audit log is what they file in their DORA register. The exit strategy is 'revoke operator key.'",
+      "recommendation": "Treat the audit log and exit-strategy doc as first-class pitch deliverables — these are the artifacts the bank's compliance officer reviews before the engineering officer."
+    },
+    {
+      "finding": "VERITAS Ed25519 is already production-grade in three chains (Helena/ALMA/paybot). Extending it to approval envelopes is incremental, not net-new crypto.",
+      "impact": "No new key infra, no new audit-team review.",
+      "recommendation": "Use VERITAS keys; serialize envelopes as JWS(EdDSA) for bank-readable wire format. Best of both."
+    }
+  ],
+
+  "open_questions_for_PM": [
+    {
+      "question": "Synchronous-blocking demo vs durable-async pitch: which does Renata want to be the *headline* on 2026-06-16? They imply different MCP tool contracts.",
+      "why_it_matters": "Banks expect durable. Demos look magical when synchronous. Hybrid is right, but the demo script needs to choose which one happens on stage. Choose now or the dev story can't be scoped."
+    },
+    {
+      "question": "Who is the canonical operator-side approver? The human Renata, or a delegate role like a treasury officer?",
+      "why_it_matters": "Drives the operator-key model (single key vs role-keyed) and the four-eyes story. If a single human approves, paybot is structurally one-eyed, not four-eyed — a bank will notice. Confirm whether the v0.3 gate models 1 or 2 approver keys."
+    },
+    {
+      "question": "Should the signed envelope be JWS-wrapped (standards-readable, +1 encoder) or stay raw VERITAS (faster ship, less recognizable)?",
+      "why_it_matters": "Bank tech reviewers will ask. JWS is ~1 day of work and pays back forever. But if BP-3.1 must ship before 2026-06-16, raw VERITAS may be acceptable for the pilot with JWS as a 6-week follow-up."
+    },
+    {
+      "question": "What's the retention SLA for the audit chain? AMLD6 implies 5 years minimum; does our current storage layer guarantee that?",
+      "why_it_matters": "If the audit chain lives in a hot DB without a documented archival path, the DORA exit story has a hole. PM needs to confirm storage policy before pitch."
+    },
+    {
+      "question": "Is the air-gapped pilot channel a real first-customer requirement, or aspiration? It changes the timeout-design priority radically.",
+      "why_it_matters": "If real → durable async + multi-day timeouts + offline envelope verification are P0. If aspirational → ship stdio + webhook now, defer air-gap to v2."
+    },
+    {
+      "question": "Does the operator console exist today, or does BP-3.1 also need to ship one?",
+      "why_it_matters": "Webhook channel is the most bank-friendly demo path, but it presupposes a console UI. If the console is not in scope, fall back to Slack interactive buttons for demo (proven, fast)."
+    }
+  ],
+
+  "sources_cited": [
+    {"label": "MCP Elicitation spec (draft)", "url": "https://modelcontextprotocol.io/specification/draft/client/elicitation"},
+    {"label": "LangGraph interrupts docs", "url": "https://docs.langchain.com/oss/python/langgraph/interrupts"},
+    {"label": "AWS Step Functions service integration patterns", "url": "https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html"},
+    {"label": "Temporal HITL AI cookbook", "url": "https://docs.temporal.io/ai-cookbook/human-in-the-loop-python"},
+    {"label": "Temporal Long-Running MCP Tools with HITL tutorial", "url": "https://learn.temporal.io/tutorials/ai/building-mcp-tools-with-temporal/adding-hitl-to-mcp-tools/"},
+    {"label": "Inngest waitForEvent docs", "url": "https://www.inngest.com/docs/features/inngest-functions/steps-workflows/wait-for-event"},
+    {"label": "Trigger.dev HITL workflow example", "url": "https://trigger.dev/docs/guides/example-projects/human-in-the-loop-workflow"},
+    {"label": "Vercel AI SDK 6 release notes (needsApproval)", "url": "https://vercel.com/blog/ai-sdk-6"},
+    {"label": "DORA Article 28 (digital-operational-resilience-act.com)", "url": "https://www.digital-operational-resilience-act.com/Article_28.html"},
+    {"label": "PSD3 readiness brief, Norton Rose Fulbright", "url": "https://www.nortonrosefulbright.com/en/knowledge/publications/cedd39c6/psd3-and-psr-from-provisional-agreement-to-2026-readiness"},
+    {"label": "Four-eyes principle in EU banking (MK Fintech Partners)", "url": "https://mkfintechpartners.com/2024/12/16/what-is-the-four-eyes-principle-that-regulated-companies-need-to-adhere-to/"},
+    {"label": "Radicle replay vulnerability disclosure (Ed25519 + nonce lesson)", "url": "https://radicle.xyz/2026/03/30/disclosure-of-vulnerability-in-signed-references"},
+    {"label": "How Elicitation in MCP Brings HITL (The New Stack)", "url": "https://thenewstack.io/how-elicitation-in-mcp-brings-human-in-the-loop-to-ai-tools/"}
+  ],
+
+  "meta": {
+    "research_token_budget_used": "approx 12k of input + 5k output",
+    "search_queries_executed": 7,
+    "auto_decisions": [
+      {"decision": "Treated DORA Article 28 → HITL link as interpretive rather than literal", "reason": "No RTS explicitly names HITL gates; the connection is via ICT third-party + ICT risk articles. Honesty about this is more valuable than overclaiming."},
+      {"decision": "Recommended JWS(EdDSA) wrapper over raw VERITAS for bank-facing wire", "reason": "Banks recognize JWS from ACME/OIDC. Cost is 1 encoder. Open question 3 flags the trade-off back to PM."},
+      {"decision": "Recommended hybrid timeout (interactive + durable) over either pure-sync or pure-async", "reason": "Sync alone fails bank ops reality; async alone hurts the demo. Hybrid is honest and bank-recognizable."}
+    ]
+  }
+}
