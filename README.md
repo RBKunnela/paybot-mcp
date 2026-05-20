@@ -20,7 +20,7 @@ Add to `claude_desktop_config.json`:
       "args": ["paybot-mcp"],
       "env": {
         "PAYBOT_API_KEY": "pb_...",
-        "PAYBOT_FACILITATOR_URL": "https://facilitator.paybot.dev",
+        "PAYBOT_FACILITATOR_URL": "https://api.paybotcore.com",
         "PAYBOT_BOT_ID": "my-agent"
       }
     }
@@ -50,7 +50,7 @@ Add to `claude_desktop_config.json`:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PAYBOT_API_KEY` | PayBot API key | (required) |
-| `PAYBOT_FACILITATOR_URL` | Facilitator server URL | `http://localhost:3000` |
+| `PAYBOT_FACILITATOR_URL` | Facilitator server URL | `https://api.paybotcore.com` |
 | `PAYBOT_BOT_ID` | Default bot identifier | `mcp-agent` |
 | `PAYBOT_WALLET_KEY` | Wallet private key for real payments | (optional) |
 
