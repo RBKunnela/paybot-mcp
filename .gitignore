@@ -7,6 +7,23 @@ coverage/
 .DS_Store
 
 # Internal sprint planning — paybot-mcp is Apache-2.0 public; story files
-# may reference operator-private workspace slugs and must not ship.
-docs/stories/
+# may reference operator-private workspace slugs and must not ship by default.
+# Use `docs/stories/*` (not `docs/stories/`) so individual files can be
+# re-included via negation patterns below. Git docs: "It is not possible to
+# re-include a file if a parent directory of that file is excluded."
+docs/stories/*
+# Carve-out: bank-pitch sprint stories ARE tracked (no operator-private
+# content; co-located with their specs under docs/specs/BP-*/).
+# Vetted on a per-file basis before commit by @sm + @po + boundary audit.
+!docs/stories/BP-1.6-commit-staged-mcp-work.md
+!docs/stories/BP-1.6/
+docs/stories/BP-1.6/*
+!docs/stories/BP-1.6/semantic-intent.md
+!docs/stories/BP-1.6/semantic-mapping.md
+!docs/stories/BP-3.1-hitl-middleware.md
+!docs/stories/BP-3.1/
+docs/stories/BP-3.1/*
+!docs/stories/BP-3.1/semantic-intent.md
+!docs/stories/BP-3.1/semantic-mapping.md
+!docs/stories/EPIC-BANK-PITCH-2026-06-30.md
 
