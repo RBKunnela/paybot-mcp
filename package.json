@@ -32,7 +32,8 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src --ext .ts",
+    "coverage": "vitest run --coverage",
+    "lint": "eslint src tests --ext .ts",
     "format": "prettier --write src",
     "type-check": "tsc --noEmit",
     "prepublishOnly": "npm run build"
@@ -74,9 +75,12 @@
     }
   },
   "devDependencies": {
+    "@esbuild/win32-x64": "^0.28.0",
+    "@rollup/rollup-win32-x64-msvc": "^4.60.4",
     "@types/node": "^25.3.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.6.1",
     "eslint": "^8.56.0",
     "paybot-sdk": "^0.2.0",
     "prettier": "^3.1.0",
