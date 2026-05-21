@@ -584,7 +584,7 @@ phases:
 cross_repo_dependencies:
   - repo: paybot
     items:
-      - description: "VERITAS public key for paybot-mcp-chain published at docs/architecture/keys/paybot-mcp-chain.pub"
+      - description: "VERITAS public key for paybot-mcp-chain published at keys/veritas/public/paybot-mcp-chain.pub (per ADR-BP-002 §2.1, Accepted — supersedes prior docs/architecture/keys/ path)"
         owner: "@devops (Gage)"
         blocks: "P10-verifier-kit (T10.1)"
         status: "pending"
