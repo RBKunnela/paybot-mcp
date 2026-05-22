@@ -1,0 +1,54 @@
+# Dependabot — automated dependency PRs for paybot-mcp
+#
+# What:    Weekly version-update PRs for npm packages and GitHub Actions.
+#          Security updates (CVE fixes) are auto-enabled separately via the
+#          /repos/{owner}/{repo}/automated-security-fixes API and surface
+#          regardless of the schedule below.
+# Why:     Keep supply chain current; minimize lag between CVE disclosure and patch.
+#          paybot-mcp is published to npm and depends on paybot-sdk (peerDep) —
+#          downstream MCP-client surface area makes timely security patching
+#          load-bearing.
+# Gate:    PRs run through CI + the SINKRA chain. @qa flags risk, @devops merges.
+#
+# Ecosystem coverage:
+#   - npm (package-lock.json at repo root) — only runtime ecosystem
+#   - github-actions (workflows in .github/workflows/) — keeps action versions current
+#   No Python / Go / Rust / Ruby lockfiles detected — single-ecosystem repo.
+#
+# Reference:
+#   - https://docs.github.com/en/code-security/dependabot
+#   - Precedent (public): paybot-sdk PR #11 (merged 2513676d, 2026-05-22)
+#   - Precedent (private): paybot-core PR #3 (merged 6dc6f5aa, 2026-05-22)
+version: 2
+updates:
+  # ---------- npm ecosystem ----------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "npm"
+
+  # ---------- GitHub Actions ecosystem ----------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
