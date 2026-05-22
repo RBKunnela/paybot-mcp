@@ -54,7 +54,8 @@ permissions:
 jobs:
   scan:
     # AP #2: exact tag, not `@v2` major alias.
-    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.2.1"
+    # SHA-pinned per CodeRabbit MAJOR finding on paybot-mcp PR #1 (2026-05-22).
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@456ceb78310755116e0a3738121351006286b797"  # v2.2.1
     with:
       scan-args: |-
         --recursive
