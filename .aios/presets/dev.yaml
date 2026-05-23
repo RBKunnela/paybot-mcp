@@ -1,0 +1,24 @@
+# DEV Environment Preset
+# Apply: copy to .aios/config.yaml
+# Or run: aios env dev
+
+environment: dev
+
+permissions:
+  mode: auto
+
+quality:
+  enforce_qa_gate: false
+  enforce_tests: false
+  enforce_architecture_first: false
+  enforce_code_review: false
+  min_test_coverage: 0
+
+security:
+  allow_skip_permissions: true
+  allow_force_push: false
+  require_signed_commits: false
+
+agents:
+  strict_authority: false
+  require_story: false

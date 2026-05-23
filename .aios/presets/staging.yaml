@@ -1,0 +1,24 @@
+# STAGING Environment Preset
+# Apply: copy to .aios/config.yaml
+# Or run: aios env staging
+
+environment: staging
+
+permissions:
+  mode: ask
+
+quality:
+  enforce_qa_gate: true
+  enforce_tests: true
+  enforce_architecture_first: false
+  enforce_code_review: true
+  min_test_coverage: 60
+
+security:
+  allow_skip_permissions: false  # BLOCKED in staging
+  allow_force_push: false
+  require_signed_commits: false
+
+agents:
+  strict_authority: true
+  require_story: true

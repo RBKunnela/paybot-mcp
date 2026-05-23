@@ -1,0 +1,77 @@
+# design-designer aesthetic lexicon — Q3 options
+# Version: 1.0.0
+# Editable: Renata can add new feelings as she discovers them.
+# Consumed by: SKILL.md Phase 3 (Q3 multi-select up to 3, weighted)
+
+version: "1.0.0"
+spec_date: "2026-04-19"
+
+feelings:
+  - id: late-night-cinematic
+    label: "Late-night cinematic"
+    hint: "dark, moody, A24"
+
+  - id: warm-editorial
+    label: "Warm editorial"
+    hint: "print magazine, off-white, serif"
+
+  - id: luxury-product
+    label: "Luxury product"
+    hint: "Apple keynote, photographic restraint"
+
+  - id: playful-kinetic
+    label: "Playful and kinetic"
+    hint: "bright, motion-heavy"
+
+  - id: clinical-technical
+    label: "Clinical and technical"
+    hint: "Bloomberg terminal, data-dense"
+
+  - id: handcrafted-human
+    label: "Handcrafted and human"
+    hint: "notebook, imperfect"
+
+  - id: brutalist
+    label: "Brutalist"
+    hint: "raw, system fonts, visible grid"
+
+  - id: swiss-precise
+    label: "Swiss-precise"
+    hint: "Muller-Brockmann, grid-purist"
+
+  - id: newsroom-utilitarian
+    label: "Newsroom-utilitarian"
+    hint: "FT-style dense, info-first"
+
+  - id: terminal-native
+    label: "Terminal-native"
+    hint: "monospace, ANSI palette, scanlines"
+
+  - id: maximalist
+    label: "Maximalist"
+    hint: "loud color, pattern stacking"
+
+  - id: y2k-frutiger-aero
+    label: "Y2K / Frutiger Aero"
+    hint: "glossy, translucent"
+
+  - id: japanese-minimal
+    label: "Japanese minimal"
+    hint: "asymmetric, negative-space-as-subject"
+
+  - id: risograph-print-artifact
+    label: "Risograph / print-artifact"
+    hint: "limited ink layers, grain"
+
+  - id: academic-thesis
+    label: "Academic / thesis"
+    hint: "serif body, footnotes, wide margins"
+
+  - id: post-digital-vaporwave-sober
+    label: "Post-digital / vaporwave-sober"
+    hint: "washed gradients used seriously"
+
+  - id: other-writein
+    label: "Other (write in)"
+    hint: "triggers follow-up question for custom aesthetic"
+    triggers_follow_up: true

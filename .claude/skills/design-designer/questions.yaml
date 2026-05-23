@@ -1,0 +1,330 @@
+# design-designer question bank
+# Version: 1.0.0
+# Source: .aios/handoffs/design-designer-spec-2026-04-19.md (5-agent roundtable, approved Renata)
+# Consumed by: SKILL.md workflow
+#
+# Field conventions:
+#   id:           canonical question id (e.g. Q1, Q4b)
+#   phase:        which interview phase (1-5) this belongs to
+#   required:     must be non-empty to pass Gate 1
+#   conditional:  only asked when this expression is true
+#   type:         string | multiselect | select | number | url | path | text
+#   options:      list of allowed values for select/multiselect
+#   default:      pre-filled answer (null if none)
+#   max:          upper bound for multiselect/number
+#   min:          lower bound for multiselect/list-length
+
+version: "1.0.0"
+spec_date: "2026-04-19"
+
+questions:
+  - id: Q0
+    phase: 1
+    label: "Project detection"
+    required: true
+    type: select
+    options: [alma, xsquadshield, aios-core, my2ndbrain, aiagentsprompt, secondbrain, other]
+    auto_detect: "scripts/detect_project.sh"
+    fallback: prompt
+    note: |
+      Auto-detected from cwd via detect_project.sh. If empty, prompt user.
+      Loads brands/{slug}.yaml and voices/{slug}.md.
+
+  - id: Q0.5
+    phase: 1
+    label: "Extend or new?"
+    required: false
+    type: select
+    options: [extend-latest, start-fresh, replay]
+    default: start-fresh
+    conditional: "prior_runs_exist_for(project, artifact)"
+    note: |
+      Queries runs/{slug}/ for prior matching artifact runs.
+      extend → preload answers; fresh → blank; replay → switch to replay mode.
+
+  - id: Q0.7
+    phase: 1
+    label: "Strategy triage — what is this artifact trying to move?"
+    required: true
+    type: select
+    options:
+      - fundraise
+      - convert
+      - teach
+      - recruit
+      - defend-positioning
+      - internal-align
+      - other
+    soft_gate:
+      logo: "@aaron-draplin typically owns this"
+      new-brand-from-zero: "@marty-neumeier typically owns this"
+      pricing-page-strategy: "@patrick-campbell typically owns this"
+      a11y-critical-dashboard: "@stephanie-walter typically owns this"
+      fundraise-deck: "@chris-do owns narrative before Claude Design"
+    gate_message: "Heads up — {specialist}. Proceed anyway? (Default: yes for prototyping, no for production.)"
+
+  - id: Q1
+    phase: 1
+    label: "Artifact type"
+    required: true
+    type: select
+    options:
+      - landing-page
+      - pitch-deck
+      - scroll-driven-storytelling-site
+      - clickable-mobile-app-prototype
+      - marketing-website
+      - dashboard-or-admin-ui
+      - other
+
+  - id: Q1.5
+    phase: 1
+    label: "Aspect ratio"
+    required: true
+    conditional: "Q1 in [pitch-deck, clickable-mobile-app-prototype, scroll-driven-storytelling-site, marketing-website, video, reel]"
+    type: select
+    per_type_options:
+      pitch-deck: ["16:9 (1920x1080)", "4:3 (legacy)", "9:16 (vertical reel)"]
+      clickable-mobile-app-prototype: ["9:19.5 (iPhone 15)", "9:20 (Android)", "custom"]
+      scroll-driven-storytelling-site: ["responsive", "1440-wide", "other"]
+      marketing-website: ["responsive", "1440-wide", "1920-wide"]
+      video: ["16:9", "9:16", "1:1", "4:5"]
+    must_be_explicit: true
+    reject_values: ["default", ""]
+
+  - id: Q2a
+    phase: 2
+    label: "Purpose (one sentence) — what is this for?"
+    required: true
+    type: text
+    max_length: 280
+
+  - id: Q2b
+    phase: 2
+    label: "Audience emotional state (3-5 words) — what is the audience feeling the moment this lands?"
+    required: true
+    type: text
+    examples:
+      - "skeptical, tired, seen-it-before"
+      - "curious, decision-ready, flattered"
+      - "post-bad-quarter, defensive"
+
+  - id: Q3
+    phase: 3
+    label: "Aesthetic target — multi-select up to 3, weighted primary/secondary"
+    required: true
+    type: multiselect
+    max: 3
+    min: 1
+    source: "lexicons/feelings.yaml"
+    weighted: true
+    follow_up_on: ["other"]
+
+  - id: Q4
+    phase: 2
+    label: "Context imports — URLs or absolute paths (no descriptions)"
+    required: true
+    type: multiselect
+    min: 1
+    options:
+      - figma-file-frame-url
+      - github-repo-or-abs-path
+      - screenshot-file-paths
+      - another-claude-design-project-url
+      - brand-doc-path-or-paste
+    must_be_url_or_path: true
+    no_context_message: |
+      Claude Design requires design context — scratch-building is last resort and leads to poor design.
+      Before we continue, gather one of: reference URLs / screenshots / existing brand doc / 3 inspiration links.
+      Return when ready.
+
+  - id: Q4b
+    phase: 2
+    label: "Token-source path — where does design truth live?"
+    required: true
+    type: select
+    options:
+      - tokens-json-path
+      - tailwind-config-path
+      - figma-file-frame-url
+      - css-vars-file
+      - storybook-url
+      - none-invent-from-refs
+    follow_up: "path or URL if selected"
+
+  - id: Q5
+    phase: 3
+    label: "Brand primitives — preload from brands/{slug}.yaml"
+    required: true
+    type: composite
+    fields:
+      primary_color:
+        required: true
+        format: hex
+      accent_color:
+        required: true
+        format: hex
+      neutral_color:
+        required: true
+        format: hex
+      headline_typeface:
+        required: true
+        type: string
+      body_typeface:
+        required: true
+        type: string
+    reject_vibes: true
+    vibes_example_reject: "blue, modern"
+
+  - id: Q5b
+    phase: 3
+    label: "Voice sample — paste 2-3 sentences of your own writing at its best"
+    required: true
+    type: text
+    min_sentences: 1
+    preload_from: "voices/{slug}.md"
+    auto_capture_offer: true
+
+  - id: Q5c
+    phase: 3
+    label: "Banned phrases — words/phrases that feel 'not you'"
+    required: false
+    type: multiselect
+    min: 0
+    defaults:
+      - "Unlock"
+      - "Empower"
+      - "Supercharge"
+      - "Reimagine"
+      - "Welcome to"
+      - "In a world where"
+      - "At the intersection of"
+      - "We believe"
+      - "The future of"
+      - "Built for"
+    allow_user_additions: true
+
+  - id: Q6
+    phase: 4
+    label: "Variations — count + axis"
+    required: true
+    type: composite
+    fields:
+      count_preset:
+        required: true
+        options:
+          - "3 same-vibe different-layouts"
+          - "4 safe-to-wild (Claude Design default)"
+          - "6 exploring dimensions (color/type/motion/structure)"
+          - "1 final only"
+      axis:
+        required: true
+        type: string
+
+  - id: Q6b
+    phase: 4
+    label: "Reference anchors — 2 real sites/products/artifacts this should feel adjacent to (be specific)"
+    required: true
+    type: list
+    min: 1
+    target: 2
+    examples:
+      - "Stripe docs circa 2022"
+      - "Teenage Engineering OP-1 manual"
+      - "Economist Espresso app"
+    allow_brand_refs: true
+
+  - id: Q7
+    phase: 4
+    label: "Sections/screens — named list"
+    required: true
+    type: list
+    min: 3
+    reject_values: ["some sections", "a few", "standard"]
+
+  - id: Q7b
+    phase: 4
+    label: "Density — sparse or dense?"
+    required: true
+    type: select
+    options: [sparse, dense]
+    descriptions:
+      sparse: "one idea per screen, lots of air"
+      dense: "information-rich, multi-column, footnoted"
+
+  - id: Q8
+    phase: 5
+    label: "Banned elements — defaults always included, user can add more"
+    required: true
+    type: multiselect
+    min: 0
+    defaults_visual:
+      - "no lorem ipsum"
+      - "no centered hero headlines"
+      - "no full-viewport hero images with text overlay"
+      - "no three-column feature grids with icons"
+      - "no testimonial cards with rounded avatars"
+      - "no gradient blobs"
+      - "no floating orbs"
+    defaults_copy:
+      - "em-dashes as drama"
+      - "one-word sentences as paragraphs"
+    note: "Q5c user phrases merge into defaults_copy at assembly time"
+    allow_user_additions: true
+
+  - id: Q9
+    phase: 5
+    label: "Speaker notes (deck only)"
+    required: true
+    conditional: "Q1 == pitch-deck"
+    type: select
+    options:
+      - none
+      - cue-bullets
+      - full-conversational-script
+    must_be_explicit: true
+
+  - id: Q10
+    phase: 5
+    label: "Export / handoff target"
+    required: true
+    type: multiselect
+    min: 1
+    options:
+      - keep-in-claude-design
+      - export-to-claude-code
+      - export-to-canva
+      - export-to-pdf
+      - export-to-pptx
+
+  - id: Q11
+    phase: 5
+    label: "Tweaks — hard cap 3-5, structured"
+    required: true
+    type: list
+    min: 1
+    max: 5
+    over_max_message: "Tweaks are a scalpel, not a control panel."
+    item_schema:
+      label: string
+      type: [slider, toggle, select]
+      affects: list
+    default_tweak:
+      label: "voice-register"
+      type: slider
+      affects: ["copy tone"]
+
+  - id: Q12
+    phase: 5
+    label: "Cringe hierarchy — worse sin: looking generic OR trying too hard?"
+    required: true
+    type: select
+    options: [looking-generic, trying-too-hard]
+
+  - id: Q13
+    phase: 5
+    label: "Multi-artifact system?"
+    required: true
+    type: select
+    options: [yes-system, no-one-shot]
+    on_yes: "emit reusable token block for next invocation"

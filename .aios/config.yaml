@@ -1,0 +1,40 @@
+# AIOS Configuration
+# Toggle between dev and prod environments
+# Changes take effect immediately — hooks read this file on every tool call
+
+# Environment: dev | staging | prod
+# - dev: YOLO mode allowed, quality gates relaxed, dangerously-skip-permissions OK
+# - staging: YOLO blocked, quality gates enforced, manual QA required
+# - prod: YOLO blocked, ALL gates enforced, no skip-permissions, full security
+environment: dev
+
+# Permission mode: explore | ask | auto (alias: yolo)
+# - explore: read-only, safe exploration
+# - ask: confirm before changes (default for staging/prod)
+# - auto: full autonomy (only allowed in dev environment)
+permissions:
+  mode: auto
+
+# Quality gates toggle
+# In dev: can be relaxed for faster iteration
+# In prod: ALWAYS enforced, cannot be overridden
+quality:
+  enforce_qa_gate: false       # dev: false, prod: true (forced)
+  enforce_tests: false         # dev: false, prod: true (forced)
+  enforce_architecture_first: false  # dev: false, prod: true (forced)
+  enforce_code_review: false   # dev: false, prod: true (forced)
+  min_test_coverage: 0         # dev: 0, prod: 80
+
+# Security
+# dangerously-skip-permissions guard
+security:
+  allow_skip_permissions: true  # dev: true, prod: false (HARD BLOCK)
+  allow_force_push: false       # always false unless explicitly true
+  require_signed_commits: false # dev: false, prod: true
+
+# Agent authority
+# In dev: relaxed — any agent can push/PR for speed
+# In prod: strict — only @devops can push/PR
+agents:
+  strict_authority: false       # dev: false, prod: true
+  require_story: false          # dev: false, prod: true

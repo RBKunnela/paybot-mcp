@@ -1,0 +1,24 @@
+# PROD Environment Preset
+# Apply: copy to .aios/config.yaml
+# Or run: aios env prod
+
+environment: prod
+
+permissions:
+  mode: ask
+
+quality:
+  enforce_qa_gate: true
+  enforce_tests: true
+  enforce_architecture_first: true
+  enforce_code_review: true
+  min_test_coverage: 80
+
+security:
+  allow_skip_permissions: false  # HARD BLOCK — dangerously-skip-permissions BLOCKED
+  allow_force_push: false
+  require_signed_commits: true
+
+agents:
+  strict_authority: true   # Only @devops can push/PR
+  require_story: true      # Must have story before coding
