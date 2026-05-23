@@ -46,7 +46,9 @@ jobs:
         # the corresponding tag at https://github.com/RBKunnela/sinkra-action/tags
         uses: RBKunnela/sinkra-action@af19709550dc6e9355f439a1900984e284bf3e89 # v0.1.3
         with:
-          zai-api-key: ${{ secrets.LLM_API_KEY }}
+          zai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          zai-base-url: 'https://api.openai.com/v1'
+          model: 'gpt-4o-mini'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           # Defaults: zai-base-url, model (glm-4.6), agents (all),
           # max-diff-tokens (15000). Override here only if a repo has special needs.
