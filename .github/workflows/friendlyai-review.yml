@@ -35,12 +35,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run FriendlyAI Review (v0.1.0, SHA-pinned)
+      - name: Run FriendlyAI Review (v0.2.0, SHA-pinned)
         # SHA pin per supply-chain hygiene. To upgrade, bump SHA + comment to the
         # corresponding tag from https://github.com/RBKunnela/friendlyai-review/tags
-        uses: RBKunnela/friendlyai-review@cd694398eef0e9cc645644f83132f03efdb56d01 # v0.1.0
+        uses: RBKunnela/friendlyai-review@07b0619ce8c5838b6b5984e96862e1df2ae96c7f # v0.2.0
         with:
-          zai-api-key: ${{ secrets.ZAI_API_KEY }}
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # Defaults are used for: zai-base-url, model (glm-4.6), agents (all),
+          # Defaults: llm-base-url (OpenAI), model (gpt-4o-mini), agents (all),
           # max-diff-tokens (15000). Override here only if a repo has special needs.
