@@ -25,9 +25,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Run FriendlyAI Review
-        uses: RBKunnela/friendlyai-review-action@a8997c65c1ea219cfad5c591c9f8bf90a4c7a72c # v1.0.2
+        uses: RBKunnela/friendlyai-review-action@bac4f0dd0a07da2815332fd88df7e60bf838e937 # v1.0.3
         with:
           review-api-key: ${{ secrets.FRIENDLYAI_REVIEW_API_KEY }}
           review-api-url: ${{ secrets.FRIENDLYAI_REVIEW_API_URL }}
           github-token: ${{ github.token }}
           bypass-label: friendlyai-bypass-ack-by-maintainer
+          # This repo IS story-driven (docs/stories/ + active epics), so it keeps
+          # the full linked-story / acceptance-criteria rubric instead of the
+          # default 'standard' code-review rubric. Required because the service
+          # default is 'standard' — without this, a redeploy would silently
+          # downgrade this repo. See friendlyai-review#1 / -action#2.
+          methodology: story-driven
