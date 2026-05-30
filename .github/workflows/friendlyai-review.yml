@@ -25,10 +25,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Run FriendlyAI Review
-        # TODO(before merge): bump this pin to the v1.0.3 SHA once
-        # friendlyai-review-action#2 is released. The `methodology` input below
-        # is INERT until the pin is bumped — v1.0.2 does not forward it.
-        uses: RBKunnela/friendlyai-review-action@a8997c65c1ea219cfad5c591c9f8bf90a4c7a72c # v1.0.2
+        uses: RBKunnela/friendlyai-review-action@bac4f0dd0a07da2815332fd88df7e60bf838e937 # v1.0.3
         with:
           review-api-key: ${{ secrets.FRIENDLYAI_REVIEW_API_KEY }}
           review-api-url: ${{ secrets.FRIENDLYAI_REVIEW_API_URL }}
