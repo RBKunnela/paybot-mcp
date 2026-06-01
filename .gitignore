@@ -36,3 +36,11 @@ docs/stories/BP-3.1/*
 !docs/stories/BP-3.1/semantic-mapping.md
 !docs/stories/EPIC-BANK-PITCH-2026-06-30.md
 
+# === AIOS/AIOX framework scaffolding (local-only, not part of the app) ===
+# paybot-mcp is Apache-2.0 public; the AIOX cockpit/agent scaffolding leaks in
+# from the operator's working environment and must never ship.
+.claude/
+.aios/
+.aios-core/
+.aiox-core/
+
