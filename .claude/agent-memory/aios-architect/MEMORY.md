@@ -1,2 +1,0 @@
-- [Sinkra Action](project_sinkra_action.md) — Private GitHub Action at RBKunnela/sinkra-action; 9-agent AIOX validation council; Z.AI-powered (glm-4.6); v0.1 committed 2026-05-22; dist/ next-session
-- [Scope Discipline](feedback_scope_discipline.md) — For concrete tool requests, skip roundtables and go straight to @architect → @dev → @devops build chain; established 2026-05-22
