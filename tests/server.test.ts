@@ -31,21 +31,35 @@ vi.mock('paybot-sdk', () => ({
 type ToolHandler = (args: Record<string, unknown>, extra: unknown) => Promise<unknown>;
 const registeredTools = new Map<string, { description: string; schema: unknown; handler: ToolHandler }>();
 
+// Capture the {name, version} the server was constructed with so we can assert
+// the served version is sourced from package.json (no drift).
+const mcpServerConstructorArgs: Array<{ name?: string; version?: string }> = [];
+
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
-  McpServer: vi.fn().mockImplementation(() => ({
-    tool: vi.fn((name: string, description: string, schema: unknown, handler: ToolHandler) => {
-      registeredTools.set(name, { description, schema, handler });
-    }),
-    connect: vi.fn(),
-  })),
+  McpServer: vi.fn().mockImplementation((info: { name?: string; version?: string }) => {
+    mcpServerConstructorArgs.push(info);
+    return {
+      tool: vi.fn((name: string, description: string, schema: unknown, handler: ToolHandler) => {
+        registeredTools.set(name, { description, schema, handler });
+      }),
+      connect: vi.fn(),
+    };
+  }),
 }));
 
+import { createRequire } from 'node:module';
 import { createMcpServer } from '../src/server.js';
 import { PayBotClient, PayBotApiError } from 'paybot-sdk';
+
+// Independently read the canonical version from package.json so the test
+// asserts against the real source of truth rather than a hardcoded literal.
+const require = createRequire(import.meta.url);
+const { version: PACKAGE_VERSION } = require('../package.json') as { version: string };
 
 describe('createMcpServer', () => {
   beforeEach(() => {
     registeredTools.clear();
+    mcpServerConstructorArgs.length = 0;
     vi.clearAllMocks();
     process.env.PAYBOT_API_KEY = 'pb_test_key';
     process.env.PAYBOT_BOT_ID = 'test-bot';
@@ -62,6 +76,15 @@ describe('createMcpServer', () => {
   it('should return an MCP server instance', () => {
     const server = createMcpServer();
     expect(server).toBeDefined();
+  });
+
+  it('should serve the version from package.json (no drift)', () => {
+    createMcpServer();
+    expect(mcpServerConstructorArgs).toHaveLength(1);
+    expect(mcpServerConstructorArgs[0].name).toBe('paybot');
+    expect(mcpServerConstructorArgs[0].version).toBe(PACKAGE_VERSION);
+    // Guard against the previously-hardcoded stale literal regressing.
+    expect(mcpServerConstructorArgs[0].version).not.toBe('0.1.0');
   });
 
   it('should register exactly 4 tools', () => {

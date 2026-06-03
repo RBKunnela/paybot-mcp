@@ -1,7 +1,21 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 import { PayBotClient, PayBotApiError } from 'paybot-sdk';
 import type { TrustLevel } from 'paybot-sdk';
+
+/**
+ * Single source of truth for the served version.
+ *
+ * Read from package.json at runtime so the MCP handshake version can never
+ * drift from the published package version. `createRequire` resolves
+ * `../package.json` relative to the compiled `dist/server.js` (one level above
+ * dist/) as well as `src/server.ts` (one level above src/) — package.json sits
+ * at the repo root in both layouts. Reading at runtime (rather than a JSON
+ * import) keeps package.json outside tsconfig's `rootDir: ./src`.
+ */
+const require = createRequire(import.meta.url);
+const { version: PACKAGE_VERSION } = require('../package.json') as { version: string };
 
 /**
  * Create a PayBot MCP server exposing payment tools to AI agents.
@@ -15,7 +29,7 @@ import type { TrustLevel } from 'paybot-sdk';
 export function createMcpServer(): McpServer {
   const server = new McpServer({
     name: 'paybot',
-    version: '0.1.0',
+    version: PACKAGE_VERSION,
   });
 
   // Shared client — lazily created per-request from env
