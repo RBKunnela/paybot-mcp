@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 
 // Mock paybot-sdk before importing server
 const mockPay = vi.fn();
@@ -549,8 +550,18 @@ describe('paybot_list_networks_and_tokens tool', () => {
     const tool = registeredTools.get('paybot_list_networks_and_tokens')!;
     const result = await tool.handler({}, {}) as { content: Array<{ text: string }> };
     const text = result.content[0].text.toLowerCase();
-    // The known operator-private EURC mainnet address must never appear.
-    expect(text).not.toContain('0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42');
+    // The known operator-private EURC mainnet address must never appear. We do
+    // NOT store the literal here (that would publish what we guard) — instead we
+    // extract every 0x-40-hex token from the output, lowercase + sha256 each,
+    // and assert none matches the stored one-way hash of the address.
+    const FORBIDDEN_EURC_ADDR_SHA256 =
+      'b263ba174b7c339735c3734a9829d0dc5af0f5dd2efbfdfe79add4065a44148a';
+    const tokens = text.match(/0x[0-9a-f]{40}/g) ?? [];
+    const offending = tokens.filter(
+      (t) => createHash('sha256').update(t).digest('hex') === FORBIDDEN_EURC_ADDR_SHA256,
+    );
+    // Report by count only — never echo the offending value.
+    expect(offending.length, 'operator-private token address detected in tool output').toBe(0);
     // No premium/regulatory markers.
     expect(text).not.toContain('mica');
     expect(text).not.toContain('override');
