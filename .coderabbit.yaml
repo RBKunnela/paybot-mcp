@@ -1,0 +1,19 @@
+# CodeRabbit Configuration for PayBot MCP
+language: en
+reviews:
+  profile: assertive
+  auto_review:
+    enabled: true
+    drafts: false
+    ignore_usernames: []   # review all authors, including dependabot/renovate bots
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        MCP server exposing PayBot payment tools to AI agents.
+        Pay attention to:
+        - Tool input validation (schemas) and safe argument handling
+        - Credential/secret handling (X-API-Key, wallet keys) — never log or leak secrets
+        - Correct facilitator API usage (api.paybotcore.com) and error propagation
+        - Graceful, safe failure on facilitator/network errors
+chat:
+  auto_reply: true
