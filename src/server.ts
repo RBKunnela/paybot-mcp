@@ -12,6 +12,7 @@ import {
   getTokenAddress,
 } from 'paybot-sdk';
 import type { TrustLevel, LimitsConfig, CommissionLedgerFilter } from 'paybot-sdk';
+import { formatDenial } from './denial-guidance.js';
 
 /**
  * Single source of truth for the served version.
@@ -118,8 +119,12 @@ export function createMcpServer(): McpServer {
       });
 
       if (!result.success) {
+        // Surface the machine errorCode + human errorDetails the SDK already
+        // returns, plus a plain-language guidance line for policy denials, so
+        // the agent can act without opening core's logs (Story A1). Non-policy
+        // failures keep their SDK text with no fabricated code/guidance.
         return {
-          content: [{ type: 'text' as const, text: `Payment failed: ${result.error}` }],
+          content: [{ type: 'text' as const, text: formatDenial(result) }],
           isError: true,
         };
       }
