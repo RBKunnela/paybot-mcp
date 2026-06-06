@@ -424,6 +424,18 @@ describe('formatDenial', () => {
     expect(text).toContain('requiredTrust');
   });
 
+  it('[UNIT] formatDenial — should omit the Details line when errorDetails is an empty object (edge case)', () => {
+    const text = formatDenial({
+      error: 'Daily limit exceeded',
+      errorCode: 'DAILY_LIMIT_EXCEEDED',
+      errorDetails: {},
+    });
+    expect(text).toContain('Code: DAILY_LIMIT_EXCEEDED');
+    expect(text).not.toContain('Details:');
+    // guidance still present for the policy code, despite the empty details object
+    expect(text).toContain(`Guidance: ${POLICY_GUIDANCE.DAILY_LIMIT_EXCEEDED}`);
+  });
+
   it('[UNIT] formatDenial — should keep every guidance key inside the policy code set and have a non-empty generic fallback (edge case)', () => {
     // Invariant: POLICY_GUIDANCE keys are a subset of POLICY_ERROR_CODES, so an
     // unmapped policy code can only ever be a future SDK addition — which the
