@@ -1,3 +1,17 @@
+/**
+ * @module tests/server
+ *
+ * Unit + integration tests for the paybot-mcp server: the 12 registered MCP
+ * tools (pay, balance, history, register, networks, health, spending-limit,
+ * commission, pool *) plus the Story A1 legible-denial helpers
+ * (`policyGuidance`, `formatDenial`) from `src/denial-guidance.ts`.
+ *
+ * The paybot-sdk is mocked so tests exercise the MCP tool wiring and denial
+ * formatting in isolation, without a live facilitator or on-chain calls.
+ *
+ * Dependencies: vitest, node:crypto, mocked @paybot/sdk.
+ * Used by: `npm test` / `vitest run` (CI gate + coverage).
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 
