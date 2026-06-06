@@ -129,6 +129,13 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
 
 import { createRequire } from 'node:module';
 import { createMcpServer } from '../src/server.js';
+import {
+  policyGuidance,
+  formatDenial,
+  POLICY_GUIDANCE,
+  GENERIC_POLICY_GUIDANCE,
+  POLICY_ERROR_CODES,
+} from '../src/denial-guidance.js';
 import { PayBotClient, PayBotApiError } from 'paybot-sdk';
 
 // Independently read the canonical version from package.json so the test
@@ -365,6 +372,170 @@ describe('paybot_pay tool', () => {
 
     expect(result.content[0].text).toContain('optimistic.etherscan.io/tx/0xOPTX');
     expect(result.content[0].text).not.toContain('sepolia.basescan.org');
+  });
+});
+
+// --- Story A1: legible policy denials ---
+
+describe('policyGuidance', () => {
+  it('[UNIT] policyGuidance — should return the mapped line when a known policy code is given', () => {
+    expect(policyGuidance('DAILY_LIMIT_EXCEEDED')).toBe(POLICY_GUIDANCE.DAILY_LIMIT_EXCEEDED);
+    expect(policyGuidance('TRUST_VIOLATION')).toBe(POLICY_GUIDANCE.TRUST_VIOLATION);
+    expect(policyGuidance('AML_BLOCKED')).toBe(POLICY_GUIDANCE.AML_BLOCKED);
+    expect(policyGuidance('SPENDING_ENVELOPE')).toBe(POLICY_GUIDANCE.SPENDING_ENVELOPE);
+  });
+
+  it('[UNIT] policyGuidance — should return null for a non-policy code (no fabricated advice)', () => {
+    expect(policyGuidance('NETWORK_ERROR')).toBeNull();
+    expect(policyGuidance('TOKEN_ADDRESS_NOT_CONFIGURED')).toBeNull();
+  });
+
+  it('[UNIT] policyGuidance — should return null when the code is undefined (edge case)', () => {
+    expect(policyGuidance(undefined)).toBeNull();
+    expect(policyGuidance('')).toBeNull();
+  });
+
+  it('[UNIT] policyGuidance — should never crash and always cover every known POLICY code', () => {
+    // Every code the SDK treats as policy must resolve to a non-empty string.
+    for (const code of ['TRUST_VIOLATION', 'AML_BLOCKED', 'DAILY_LIMIT_EXCEEDED', 'SPENDING_ENVELOPE']) {
+      const line = policyGuidance(code);
+      expect(typeof line).toBe('string');
+      expect((line as string).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('formatDenial', () => {
+  it('[UNIT] formatDenial — should include message, code, and guidance for a known policy denial (happy path)', () => {
+    const text = formatDenial({ error: 'Daily limit exceeded', errorCode: 'DAILY_LIMIT_EXCEEDED' });
+    expect(text).toContain('Payment failed: Daily limit exceeded');
+    expect(text).toContain('Code: DAILY_LIMIT_EXCEEDED');
+    expect(text).toContain(`Guidance: ${POLICY_GUIDANCE.DAILY_LIMIT_EXCEEDED}`);
+  });
+
+  it('[UNIT] formatDenial — should surface errorDetails when present', () => {
+    const text = formatDenial({
+      error: 'Trust violation',
+      errorCode: 'TRUST_VIOLATION',
+      errorDetails: { requiredTrust: 3, currentTrust: 1 },
+    });
+    expect(text).toContain('Code: TRUST_VIOLATION');
+    expect(text).toContain('Details:');
+    expect(text).toContain('requiredTrust');
+  });
+
+  it('[UNIT] formatDenial — should keep every guidance key inside the policy code set and have a non-empty generic fallback (edge case)', () => {
+    // Invariant: POLICY_GUIDANCE keys are a subset of POLICY_ERROR_CODES, so an
+    // unmapped policy code can only ever be a future SDK addition — which the
+    // non-empty GENERIC_POLICY_GUIDANCE covers without crashing or going silent.
+    for (const key of Object.keys(POLICY_GUIDANCE)) {
+      expect(POLICY_ERROR_CODES.has(key)).toBe(true);
+    }
+    expect(GENERIC_POLICY_GUIDANCE.length).toBeGreaterThan(0);
+  });
+
+  it('[UNIT] formatDenial — should preserve text with code but NO guidance for a non-policy failure (error path)', () => {
+    const text = formatDenial({ error: 'EURC mainnet address not configured', errorCode: 'TOKEN_ADDRESS_NOT_CONFIGURED' });
+    expect(text).toContain('Payment failed: EURC mainnet address not configured');
+    expect(text).toContain('Code: TOKEN_ADDRESS_NOT_CONFIGURED');
+    expect(text).not.toContain('Guidance:');
+  });
+
+  it('[UNIT] formatDenial — should omit code line entirely when no code is provided (no invented code)', () => {
+    const text = formatDenial({ error: 'facilitator unreachable' });
+    expect(text).toBe('Payment failed: facilitator unreachable');
+    expect(text).not.toContain('Code:');
+    expect(text).not.toContain('Guidance:');
+  });
+});
+
+describe('paybot_pay tool — legible denials (Story A1)', () => {
+  beforeEach(() => {
+    registeredTools.clear();
+    vi.clearAllMocks();
+    process.env.PAYBOT_API_KEY = 'pb_test';
+    createMcpServer();
+  });
+
+  afterEach(() => {
+    delete process.env.PAYBOT_API_KEY;
+  });
+
+  it('[INTEGRATION] paybot_pay — should surface errorCode + details + guidance on a known policy denial (AC1)', async () => {
+    mockPay.mockResolvedValueOnce({
+      success: false,
+      error: 'Daily limit exceeded',
+      errorCode: 'DAILY_LIMIT_EXCEEDED',
+      errorDetails: { dailyLimitUsd: 10, dailySpentUsd: 10 },
+    });
+    const tool = registeredTools.get('paybot_pay')!;
+    const result = await tool.handler(
+      { amount: '5.00', recipient: '0x1234', resource: 'https://api.example.com' },
+      {}
+    ) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Daily limit exceeded');
+    expect(result.content[0].text).toContain('DAILY_LIMIT_EXCEEDED');
+    expect(result.content[0].text).toContain('dailyLimitUsd');
+    expect(result.content[0].text).toContain('paybot_set_spending_limit');
+  });
+
+  it('[INTEGRATION] paybot_pay — should append guidance and never omit the code for a policy denial (AC2)', async () => {
+    // A policy code surfaced by the SDK that this map covers must still carry a
+    // guidance line; assert the known-code path appends guidance and the code.
+    mockPay.mockResolvedValueOnce({
+      success: false,
+      error: 'AML screening blocked this payment',
+      errorCode: 'AML_BLOCKED',
+    });
+    const tool = registeredTools.get('paybot_pay')!;
+    const result = await tool.handler(
+      { amount: '100.00', recipient: '0xBAD', resource: 'https://api.example.com' },
+      {}
+    ) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('AML_BLOCKED');
+    expect(result.content[0].text).toContain('Guidance:');
+  });
+
+  it('[INTEGRATION] paybot_pay — should preserve text and NOT fabricate guidance on a non-policy failure (AC3)', async () => {
+    mockPay.mockResolvedValueOnce({
+      success: false,
+      error: 'facilitator unreachable',
+      errorCode: 'NETWORK_ERROR',
+    });
+    const tool = registeredTools.get('paybot_pay')!;
+    const result = await tool.handler(
+      { amount: '1.00', recipient: '0x1234', resource: 'https://api.example.com' },
+      {}
+    ) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('facilitator unreachable');
+    expect(result.content[0].text).toContain('NETWORK_ERROR');
+    expect(result.content[0].text).not.toContain('Guidance:');
+  });
+
+  it('[INTEGRATION] paybot_pay — should leave the happy path response unchanged (AC4 regression)', async () => {
+    mockPay.mockResolvedValueOnce({
+      success: true,
+      txHash: '0xOK',
+      commissionRate: 0.025,
+      commissionAmount: '1250',
+      network: 'eip155:84532',
+    });
+    const tool = registeredTools.get('paybot_pay')!;
+    const result = await tool.handler(
+      { amount: '0.05', recipient: '0x1234', resource: 'https://api.example.com' },
+      {}
+    ) as { content: Array<{ text: string }>; isError?: boolean };
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('Payment successful');
+    expect(result.content[0].text).not.toContain('Guidance:');
+    expect(result.content[0].text).not.toContain('Code:');
   });
 });
 
