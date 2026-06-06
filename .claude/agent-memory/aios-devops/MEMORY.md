@@ -1,1 +1,0 @@
-- [Auto-Allow Regex Bypass](feedback_auto_allow_regex_bypass.md) — `git -C <path>` form bypasses auto-allow.sh destructive-op regex because adjacency check requires `git` directly followed by verb
