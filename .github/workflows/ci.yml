@@ -32,6 +32,15 @@ jobs:
       - name: Type check
         run: npm run type-check
 
+      # Mechanical zero-skip / no-focus gate. Fails publish if any test file
+      # contains .skip / .only / xit / xdescribe (env-gated *.skipIf allowed).
+      - name: No skipped/focused tests
+        run: npm run check:no-skip
+
+      # server.json (MCP registry manifest) must match package.json version.
+      - name: server.json version in sync
+        run: npm run check:server-version
+
       - name: Test
         run: npm test
 
