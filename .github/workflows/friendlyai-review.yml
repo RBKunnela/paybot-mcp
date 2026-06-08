@@ -35,6 +35,12 @@ jobs:
           review-api-url: ${{ secrets.FRIENDLYAI_REVIEW_API_URL }}
           github-token: ${{ github.token }}
           bypass-label: friendlyai-bypass-ack-by-maintainer
+          # This repo IS story-driven (docs/stories/ + active epics), so it keeps
+          # the full linked-story / acceptance-criteria rubric instead of the
+          # default 'standard' code-review rubric. The service default is
+          # 'standard' — without this, a redeploy would silently downgrade this
+          # repo. Supported since friendlyai-review-action v1.0.3 (#36).
+          methodology: story-driven
 
   review-fork:
     name: friendlyai-review verdict
