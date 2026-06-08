@@ -7,6 +7,38 @@ on:
     branches: [main]
 
 jobs:
+  # Full quality gate: lint + typecheck + test (vitest, zero skipped) + build.
+  # Named "test" for predictable branch-protection required-check context.
+  # NO paths: filter — a path-filtered required check hangs PRs.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  # Cross-version build + typecheck coverage (Node 18 and 20).
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -33,8 +65,10 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Publish to npm on main push ONLY after test + build gates pass.
+  # A red suite makes publish impossible.
   publish:
-    needs: build
+    needs: [test, build]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
