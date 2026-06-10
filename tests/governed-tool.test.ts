@@ -26,9 +26,10 @@ import {
 } from '../src/governed-tool.js';
 import {
   GovernanceUnreachableError,
+  ApprovalNotFoundError,
   type GovernanceClient,
   type GovernResult,
-  type ApprovalStatus,
+  type ActionApprovalStatus,
 } from '../src/governance-client.js';
 
 /** A spy-able handler that records whether it executed. */
@@ -55,14 +56,23 @@ function makeDef(
   };
 }
 
-/** A fake GovernanceClient with scripted govern + getApproval. */
+/**
+ * A fake GovernanceClient with scripted govern + getActionApproval.
+ *
+ * The interceptor polls the ACTION-scoped endpoint (`getActionApproval`), so
+ * that is what the block-mode tests script. `getApproval` (the shared-row poll)
+ * is provided but unused by the execute path.
+ */
 function fakeClient(
   govern: () => Promise<GovernResult>,
-  getApproval?: () => Promise<ApprovalStatus>
+  getActionApproval?: () => Promise<ActionApprovalStatus>
 ): GovernanceClient {
   return {
     govern: vi.fn(govern),
-    getApproval: vi.fn(getApproval ?? (async () => ({ approval_id: 'apr', decision: 'PENDING' }))),
+    getApproval: vi.fn(async () => ({ approval_id: 'apr', decision: 'PENDING' as const })),
+    getActionApproval: vi.fn(
+      getActionApproval ?? (async () => ({ approval_id: 'apr', decision: 'PENDING' }))
+    ),
   } as unknown as GovernanceClient;
 }
 
@@ -227,23 +237,17 @@ describe('[UNIT] governCall — AC2 pending → approve', () => {
   });
 });
 
-describe('[UNIT] governCall — AK-3-C1 cross-route approval gate', () => {
-  it('[ADVERSARIAL] APPROVED via the PAYMENT route (state=SETTLE_FAILED) ⇒ REFUSED, handler never runs', async () => {
-    // The shared A5a row was flipped to APPROVED by the PAYMENT approve route.
-    // That route always runs settlement, which can only fail for an action
-    // (no resume context) ⇒ state=SETTLE_FAILED / RESUME_CONTEXT_UNAVAILABLE.
-    // The interceptor must treat a present `state` as proof of a payment-route
-    // claim and refuse — a human approving a "payment" must NOT execute the action.
+describe('[UNIT] governCall — AK-3-C1 positive-signal cross-route gate', () => {
+  it('[ADVERSARIAL] PAYMENT-route approve ⇒ action-scoped stays PENDING ⇒ handler NEVER runs (call count 0)', async () => {
+    // The cross-route negative: an operator approved via the PAYMENT route. That
+    // flips the SHARED row to APPROVED, but the ACTION-scoped endpoint — the only
+    // thing the interceptor polls — stays PENDING (the payment lane never writes
+    // it). So execution is never authorized; the poll waits and then times out.
     const { handler, calls } = makeHandler();
     const client = fakeClient(
       async () => ({ decision: 'pending', reasons: [], policy_level: 3, approval_id: 'apr_1' }),
-      async () => ({
-        approval_id: 'apr_1',
-        decision: 'APPROVED',
-        decided_by: 'op-1',
-        state: 'SETTLE_FAILED',
-        settle_error: 'RESUME_CONTEXT_UNAVAILABLE',
-      })
+      // Action-scoped signal: forever PENDING despite the payment-route claim.
+      async () => ({ approval_id: 'apr_1', decision: 'PENDING' })
     );
     const res = await governCall({
       args: { database: 'prod' },
@@ -251,21 +255,21 @@ describe('[UNIT] governCall — AK-3-C1 cross-route approval gate', () => {
       client,
       subjectRef: 'bot-1',
       pendingMode: 'block',
-      approvalTimeoutMs: 1000,
-      pollIntervalMs: 1,
+      approvalTimeoutMs: 5, // tiny deadline: a payment-only approve never resolves
+      pollIntervalMs: 10,
       failOpen: false,
       sleep: noSleep,
     });
     expect(calls).toHaveLength(0); // handler call count MUST be 0
     expect(res.isError).toBe(true);
     const text = res.content.map((c) => c.text).join('\n');
-    expect(text).toContain('WRONG_APPROVAL_ROUTE');
-    expect(text).toContain('RESUME_CONTEXT_UNAVAILABLE');
+    expect(text).toContain('APPROVAL_TIMEOUT'); // never executed; waited for the ACTION route
+    expect(text).not.toContain('HANDLER RAN');
   });
 
-  it('APPROVED via the ACTION route (no settlement state) ⇒ executes exactly once', async () => {
-    // An action-route approval never settles, so the shared row carries NO
-    // `state`. This is the only shape that authorizes execution.
+  it('ACTION-route approve ⇒ action-scoped APPROVED ⇒ executes exactly once', async () => {
+    // The positive signal: only the ACTION approve route sets this endpoint to
+    // APPROVED — and that is the sole authorization to execute.
     const { handler, calls } = makeHandler();
     const client = fakeClient(
       async () => ({ decision: 'pending', reasons: [], policy_level: 3, approval_id: 'apr_1' }),
@@ -288,18 +292,15 @@ describe('[UNIT] governCall — AK-3-C1 cross-route approval gate', () => {
     expect(text).toContain('approved by op-1');
   });
 
-  it('[ADVERSARIAL] APPROVED with state=SETTLED ⇒ REFUSED (any payment-settlement state fails closed)', async () => {
-    // Defence in depth: even a "successful" payment settlement on the shared id
-    // is not an action approval. Any present `state` ⇒ refuse.
+  it('[ADVERSARIAL] action-scoped poll 404 (no action approval for this id) ⇒ fail-closed, handler never runs', async () => {
+    // A 404 on the action-scoped endpoint means no action approval exists for
+    // this id (unknown, or a payment-only row). Fail-closed: never execute.
     const { handler, calls } = makeHandler();
     const client = fakeClient(
       async () => ({ decision: 'pending', reasons: [], policy_level: 3, approval_id: 'apr_1' }),
-      async () => ({
-        approval_id: 'apr_1',
-        decision: 'APPROVED',
-        decided_by: 'op-1',
-        state: 'SETTLED',
-      })
+      async () => {
+        throw new ApprovalNotFoundError('apr_1');
+      }
     );
     const res = await governCall({
       args: { database: 'prod' },
@@ -314,7 +315,7 @@ describe('[UNIT] governCall — AK-3-C1 cross-route approval gate', () => {
     });
     expect(calls).toHaveLength(0);
     expect(res.isError).toBe(true);
-    expect(res.content.map((c) => c.text).join('\n')).toContain('WRONG_APPROVAL_ROUTE');
+    expect(res.content.map((c) => c.text).join('\n')).toContain('GOVERNANCE_UNREACHABLE');
   });
 });
 

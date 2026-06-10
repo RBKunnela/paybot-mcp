@@ -198,8 +198,10 @@ describe.skipIf(!CORE_URL)('[INTEGRATION] interceptor against live core (mock mo
   it('[AK-3-C1] pending → approve via PAYMENT route ONLY → interceptor MUST NOT execute', async () => {
     // The adversarial regression for AK-3-C1: an operator approves a paused
     // irreversible ACTION via the PAYMENT route. The shared row flips to
-    // APPROVED (before settlement fails), but the interceptor must NOT treat
-    // that as authorization — a human approving what they believe is a payment
+    // APPROVED (before settlement fails), but the ACTION-scoped signal the
+    // interceptor polls (GET /actions/approvals/:id) stays PENDING — the payment
+    // lane never writes it. So the interceptor never executes; with a short
+    // timeout it fails closed. A human approving what they believe is a payment
     // must never execute an agent's irreversible action.
     const { handler, runs } = spyHandler();
     const subject = `it-wrongroute-${Date.now()}`;
@@ -210,8 +212,10 @@ describe.skipIf(!CORE_URL)('[INTEGRATION] interceptor against live core (mock mo
       subjectRef: subject,
       policy: POLICY,
       pendingMode: 'block',
-      approvalTimeoutMs: 15000,
-      pollIntervalMs: 250,
+      // Short timeout: a payment-only approve never flips the action-scoped
+      // signal, so the poll must time out rather than ever executing.
+      approvalTimeoutMs: 2500,
+      pollIntervalMs: 200,
       failOpen: false,
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     });
@@ -223,12 +227,20 @@ describe.skipIf(!CORE_URL)('[INTEGRATION] interceptor against live core (mock mo
     expect(body.decision).toBe('APPROVED');
     expect(body.state).toBe('SETTLE_FAILED');
 
+    // The action-scoped signal — the only thing the interceptor gates on — must
+    // still read PENDING despite the payment-route APPROVED on the shared row.
+    const actionStatus = await fetch(`${CORE_URL}/actions/approvals/${approvalId}`, {
+      headers: { 'X-API-Key': API_KEY },
+    }).then((r) => r.json());
+    expect((actionStatus as { decision: string }).decision).toBe('PENDING');
+
     const res = await exec;
     // The core property: handler call count is ZERO on a payment-route approval.
     expect(runs()).toBe(0);
     expect(res.isError).toBe(true);
     const text = res.content.map((c) => c.text).join('\n');
-    expect(text).toContain('WRONG_APPROVAL_ROUTE');
+    // Never authorized: the poll waited for the ACTION route and then timed out.
+    expect(text).toContain('APPROVAL_TIMEOUT');
     // And it never reached the handler / never bound an execution hash.
     expect(text).not.toContain('RAN:');
     expect(text).not.toMatch(/result_hash=/);

@@ -196,6 +196,57 @@ describe('[UNIT] GovernanceClient.getApproval', () => {
   });
 });
 
+describe('[UNIT] GovernanceClient.getActionApproval (AK-3-C1 positive signal)', () => {
+  it('should parse a PENDING action-scoped status', async () => {
+    const c = client(
+      jsonFetch(200, { approval_id: 'ap_1', decision: 'PENDING', intent_id: 'act_9' })
+    );
+    const s = await c.getActionApproval('ap_1');
+    expect(s.decision).toBe('PENDING');
+    expect(s.intent_id).toBe('act_9');
+  });
+
+  it('should parse an APPROVED action-scoped status with decided_by + params_hash', async () => {
+    const c = client(
+      jsonFetch(200, {
+        approval_id: 'ap_1',
+        decision: 'APPROVED',
+        decided_by: 'op-1',
+        intent_id: 'act_9',
+        params_hash: 'a'.repeat(64),
+      })
+    );
+    const s = await c.getActionApproval('ap_1');
+    expect(s.decision).toBe('APPROVED');
+    expect(s.decided_by).toBe('op-1');
+    expect(s.params_hash).toBe('a'.repeat(64));
+  });
+
+  it('should hit the ACTION-scoped path, not the shared payment row', async () => {
+    const spy = vi.fn(async () =>
+      new Response(JSON.stringify({ approval_id: 'ap_1', decision: 'PENDING' }), { status: 200 })
+    );
+    await client(spy as unknown as typeof fetch).getActionApproval('ap_1');
+    const [url] = spy.mock.calls[0] as [string];
+    expect(url).toBe('http://core/actions/approvals/ap_1');
+  });
+
+  it('[ADVERSARIAL] should throw ApprovalNotFoundError on 404 (fail-closed, never APPROVED)', async () => {
+    const c = client(jsonFetch(404, { error: 'NOT_FOUND' }));
+    await expect(c.getActionApproval('ap_x')).rejects.toBeInstanceOf(ApprovalNotFoundError);
+  });
+
+  it('[ADVERSARIAL] should fail closed on a malformed decision (never APPROVED)', async () => {
+    const c = client(jsonFetch(200, { approval_id: 'ap_1', decision: 'green' }));
+    await expect(c.getActionApproval('ap_1')).rejects.toBeInstanceOf(GovernanceUnreachableError);
+  });
+
+  it('[ADVERSARIAL] should fail closed on a 503 status', async () => {
+    const c = client(jsonFetch(503, {}));
+    await expect(c.getActionApproval('ap_1')).rejects.toBeInstanceOf(GovernanceUnreachableError);
+  });
+});
+
 describe('[UNIT] governanceConfigFromEnv', () => {
   it('should resolve baseUrl + apiKey from PAYBOT_* vars', () => {
     const cfg = governanceConfigFromEnv({

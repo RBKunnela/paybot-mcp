@@ -4,9 +4,13 @@
  * Thin authenticated HTTP client for core's action-governance API (AK-2),
  * consumed by the AK-3 tool-call interceptor (`src/governed-tool.ts`).
  *
- * It speaks exactly three core endpoints and nothing else:
+ * It speaks exactly these core endpoints and nothing else:
  *  - `POST /actions/govern`            — evaluate an {@link GovernIntentRequest}
- *  - `GET  /approvals/:id`             — poll a paused action's decision
+ *  - `GET  /actions/approvals/:id`     — poll a paused action's ACTION-SCOPED
+ *                                        decision (the positive signal the
+ *                                        interceptor gates execution on)
+ *  - `GET  /approvals/:id`             — poll the SHARED A5a row (operator/debug
+ *                                        view; NOT used to authorize execution)
  *  - (operator drives `POST /actions/approvals/:id/approve|deny` out of band)
  *
  * Design constraints (story AK-3, threat model):
@@ -118,7 +122,7 @@ export type ApprovalDecision = 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED';
  */
 export type ApprovalSettleState = 'SETTLED' | 'SETTLE_FAILED';
 
-/** Parsed response from `GET /approvals/:id`. */
+/** Parsed response from `GET /approvals/:id` (the SHARED A5a row — debug view). */
 export interface ApprovalStatus {
   approval_id: string;
   decision: ApprovalDecision;
@@ -133,6 +137,26 @@ export interface ApprovalStatus {
   state?: ApprovalSettleState;
   /** Settlement error string (e.g. `RESUME_CONTEXT_UNAVAILABLE`) when present. */
   settle_error?: string;
+}
+
+/**
+ * Parsed response from `GET /actions/approvals/:id` — the ACTION-SCOPED decision.
+ *
+ * This is the POSITIVE signal the interceptor gates execution on (AK-3-C1).
+ * Core sets `decision === 'APPROVED'` here ONLY when the ACTION approve route
+ * (`POST /actions/approvals/:id/approve`, which emits `ACTION_APPROVED`) ran.
+ * A payment-route approve on the same shared id NEVER flips this — it leaves the
+ * action-scoped decision `PENDING`. An unknown id is a fail-closed 404, surfaced
+ * as {@link ApprovalNotFoundError}, never a falsy APPROVED.
+ */
+export interface ActionApprovalStatus {
+  approval_id: string;
+  decision: ApprovalDecision;
+  /** The originating intent id (echoed for execution provenance). */
+  intent_id?: string;
+  /** The params hash bound at govern time (echoed for cross-checking). */
+  params_hash?: string;
+  decided_by?: string;
 }
 
 /**
@@ -328,6 +352,54 @@ export class GovernanceClient {
         : typeof settleErrorAlt === 'string'
           ? { settle_error: settleErrorAlt }
           : {}),
+    };
+  }
+
+  /**
+   * Poll a paused action's ACTION-SCOPED approval status (the positive signal).
+   *
+   * Reads `GET /actions/approvals/:id`, which core marks `APPROVED` ONLY when
+   * the ACTION approve route ran (the `ACTION_APPROVED`-emitting path). A
+   * payment-route approve on the same shared id leaves this `PENDING`, so the
+   * interceptor can gate execution on a single, unambiguous positive signal
+   * (AK-3-C1) instead of inferring intent from a settlement state.
+   *
+   * @param approvalId - The `approval_id` returned by a `pending` govern call.
+   * @returns The parsed {@link ActionApprovalStatus}.
+   * @throws {ApprovalNotFoundError} When core returns 404 (unknown / non-action
+   *   id) — fail-closed: an absent action approval is NEVER treated as approved.
+   * @throws {GovernanceUnreachableError} On any other transport/protocol error.
+   *
+   * @example
+   * const status = await client.getActionApproval('ap_123');
+   * if (status.decision === 'APPROVED') { ...action-route approved, proceed... }
+   */
+  async getActionApproval(approvalId: string): Promise<ActionApprovalStatus> {
+    const path = `/actions/approvals/${encodeURIComponent(approvalId)}`;
+    const body = await this.request('GET', path, undefined, {
+      notFoundError: () => new ApprovalNotFoundError(approvalId),
+    });
+    const decision = (body as { decision?: unknown }).decision;
+    if (
+      decision !== 'PENDING' &&
+      decision !== 'APPROVED' &&
+      decision !== 'DENIED' &&
+      decision !== 'EXPIRED'
+    ) {
+      // A body we cannot trust is fail-closed, never treated as approved.
+      throw new GovernanceUnreachableError(
+        `Malformed action approval status: invalid decision (${String(decision)})`
+      );
+    }
+    const intentId = (body as { intent_id?: unknown }).intent_id;
+    const paramsHash = (body as { params_hash?: unknown }).params_hash;
+    const decidedBy = (body as { decided_by?: unknown }).decided_by;
+    return {
+      approval_id: String((body as { approval_id?: unknown }).approval_id ?? approvalId),
+      decision,
+      ...(typeof intentId === 'string' ? { intent_id: intentId } : {}),
+      ...(typeof paramsHash === 'string' ? { params_hash: paramsHash } : {}),
+      ...(typeof decidedBy === 'string' ? { decided_by: decidedBy } : {}),
     };
   }
 

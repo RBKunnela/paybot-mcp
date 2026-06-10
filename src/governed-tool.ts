@@ -8,8 +8,9 @@
  *   build ActionIntent → POST /actions/govern →
  *     allow   → execute handler, bind intent→result hashes in the output
  *     deny    → refuse with gate reasons (never executes)
- *     pending → 'block' mode: poll /approvals/:id until APPROVED/DENIED/EXPIRED;
- *               on APPROVED re-verify params_hash (TOCTOU) then execute once;
+ *     pending → 'block' mode: poll GET /actions/approvals/:id (the ACTION-SCOPED
+ *               signal) until APPROVED/DENIED/EXPIRED; on APPROVED re-verify
+ *               params_hash (TOCTOU) then execute once;
  *               'return' mode: hand back approval_id + instructions, no execution
  *
  * Every governance outcome leaves a tamper-evident trace in core's audit chain
@@ -33,23 +34,25 @@
  * Approval routing (QA finding AK-2-C1): a paused ACTION is approved via the
  * ACTION approvals route `POST /actions/approvals/:id/approve` (NOT the payment
  * `/approvals/:id/approve`, whose grant path always attempts settlement). The
- * interceptor only POLLS `GET /approvals/:id` (reused) and instructs the
- * operator toward the ACTION route in its pending message.
+ * interceptor instructs the operator toward the ACTION route in its pending
+ * message.
  *
- * Cross-route hazard (QA finding AK-3-C1): the approval row is the SHARED A5a
- * store, keyed only by `decision`. An operator who approves a paused action via
- * the PAYMENT route flips that row to `APPROVED` *before* settlement fails — so
- * a bare `decision === 'APPROVED'` poll cannot distinguish a payment-route claim
- * from a legitimate action-route approval, and a human approving what they
- * believe is a payment would unknowingly authorize an irreversible action.
- * Mitigation (interceptor-side, no core edits): before executing on APPROVED the
- * interceptor REQUIRES the approval to be action-shaped. The payment approve
- * route always runs the settlement state machine and writes a `state`
- * (`SETTLE_FAILED` / `RESUME_CONTEXT_UNAVAILABLE` for an action); the action
- * approve route never settles and writes NO `state`. A present `state` on an
- * APPROVED row is therefore proof the payment lane claimed it ⇒ the interceptor
- * fail-closes (`WRONG_APPROVAL_ROUTE`) and never executes. Only an `APPROVED`
- * row with NO `state` authorizes execution.
+ * Cross-route hazard (QA finding AK-3-C1) — POSITIVE-SIGNAL fix: the SHARED A5a
+ * row (`GET /approvals/:id`) is keyed only by `decision`, and BOTH the payment
+ * approve route and the action approve route flip it to `APPROVED`. So an
+ * operator who approves a paused action via the PAYMENT route flips that shared
+ * row to APPROVED *before* settlement fails — and a bare `decision === 'APPROVED'`
+ * poll of the shared row cannot tell the two apart. Rather than infer intent
+ * negatively from a settlement `state`, the interceptor polls a POSITIVE,
+ * action-scoped signal: `GET /actions/approvals/:id`. Core marks that endpoint
+ * `APPROVED` ONLY when the ACTION approve route ran (the same path that emits
+ * `ACTION_APPROVED`); a payment-route approve leaves it `PENDING`. The
+ * interceptor executes ONLY on `decision === 'APPROVED'` from this action-scoped
+ * endpoint — so a payment-route approval simply never authorizes execution
+ * (the poll keeps reading PENDING until the operator approves via the ACTION
+ * route, or the approval times out / expires). Fail-closed throughout: an
+ * unreadable status or a 404 (unknown / non-action id) is NEVER treated as
+ * approved.
  *
  * Dependencies: zod (schema), @modelcontextprotocol/sdk (McpServer typing),
  *   ./governance-client, node:crypto (params hashing).
@@ -62,6 +65,7 @@ import type { ZodRawShape } from 'zod';
 import {
   GovernanceClient,
   GovernanceUnreachableError,
+  ApprovalNotFoundError,
   type ActionPolicyEnvelope,
   type GovernReason,
 } from './governance-client.js';
@@ -391,9 +395,18 @@ export async function governCall<Args extends Record<string, unknown>>(
 }
 
 /**
- * Poll `GET /approvals/:id` with backoff until the action is approved, denied,
- * expired, or the local timeout elapses. On APPROVED, re-verify the params hash
- * (TOCTOU) and execute the handler exactly once.
+ * Poll `GET /actions/approvals/:id` (the ACTION-SCOPED signal) with backoff
+ * until the action is approved, denied, expired, or the local timeout elapses.
+ * On the action-scoped APPROVED, re-verify the params hash (TOCTOU) and execute
+ * the handler exactly once.
+ *
+ * AK-3-C1 (positive signal): execution is gated on `decision === 'APPROVED'`
+ * from the ACTION-scoped endpoint — which core sets ONLY when the ACTION approve
+ * route ran. A payment-route approve on the same shared row leaves this endpoint
+ * `PENDING`, so it never authorizes execution; the poll simply keeps waiting
+ * (until a real ACTION-route approval, a DENIED/EXPIRED, or the timeout). This
+ * supersedes the prior negative `state`-discriminator: there is no payment-route
+ * APPROVED to refuse here because the action-scoped signal never reports it.
  *
  * @typeParam Args - The decoded argument object shape.
  * @param p - The call parameters.
@@ -413,52 +426,33 @@ async function pollAndExecute<Args extends Record<string, unknown>>(
   for (;;) {
     let status;
     try {
-      status = await client.getApproval(approvalId);
+      // POSITIVE SIGNAL (AK-3-C1): poll the ACTION-scoped decision, not the
+      // shared payment row. Core reports APPROVED here ONLY for an action-route
+      // approval, so a payment-route approve can never authorize execution.
+      status = await client.getActionApproval(approvalId);
     } catch (err: unknown) {
+      // A 404 here means no action-scoped approval exists for this id (unknown,
+      // or a payment-only row). Fail-closed: never treat as approved — surface a
+      // clear refusal rather than executing.
+      if (err instanceof ApprovalNotFoundError) {
+        return governanceUnreachableResult(
+          def.name,
+          `no action-scoped approval found for ${approvalId} (fail-closed)`
+        );
+      }
       // Unreadable status is fail-closed: never treat as approved.
       return governanceUnreachableResult(
         def.name,
-        `could not read approval status: ${err instanceof Error ? err.message : String(err)}`
+        `could not read action approval status: ${err instanceof Error ? err.message : String(err)}`
       );
     }
 
     if (status.decision === 'APPROVED') {
-      // Cross-route hazard gate (AK-3-C1): the approval row is the SHARED A5a
-      // store. Both the PAYMENT route (`POST /approvals/:id/approve`) and the
-      // ACTION route (`POST /actions/approvals/:id/approve`) flip a paused row
-      // to APPROVED. We must execute the governed action ONLY when the approval
-      // came through the ACTION route — otherwise an operator who believes they
-      // are approving a PAYMENT would unknowingly authorize an irreversible
-      // agent action.
+      // Reaching APPROVED on the ACTION-scoped endpoint is itself the proof the
+      // ACTION approve route ran (it is the only writer of this signal). No
+      // negative cross-route discriminator is needed — a payment-route approve
+      // would have left this PENDING and we would not be here.
       //
-      // The discriminator (see ApprovalStatus.state): the payment approve route
-      // ALWAYS runs the settlement state machine and writes a `state` (it can
-      // only ever record SETTLE_FAILED / RESUME_CONTEXT_UNAVAILABLE for an
-      // action — there is no payment resume context). The action approve route
-      // NEVER settles, so an action-shaped approval is APPROVED with NO `state`.
-      // Fail-closed: a present `state` means the payment lane claimed this row,
-      // so we REFUSE to execute regardless of the APPROVED decision.
-      if (status.state !== undefined) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: [
-                `Action '${def.name}' was approved via the PAYMENT route and REFUSED:`,
-                'a governed action can only be executed when approved through the',
-                'ACTION approvals route (POST /actions/approvals/:id/approve).',
-                `The shared approval shows a payment-settlement state (${status.state}` +
-                  `${status.settle_error ? `: ${status.settle_error}` : ''}), which proves`,
-                'the payment lane claimed it — not the action lane.',
-                `approval_id: ${approvalId}`,
-                'Fail-closed: re-approve via the ACTION route to authorize execution.',
-                'Code: WRONG_APPROVAL_ROUTE',
-              ].join('\n'),
-            },
-          ],
-          isError: true,
-        };
-      }
       // TOCTOU re-check: re-derive the hash from the LIVE args at the instant
       // before execution. If the in-memory args were mutated between govern and
       // now (test harness / a compromised caller), this no longer matches the
