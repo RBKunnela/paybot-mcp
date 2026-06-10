@@ -24,6 +24,12 @@
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createMcpServer } from './server.js';
+import { warnIfApiKeyMissing } from './config-warnings.js';
+
+// Surface a missing API key at boot (stderr) instead of at the first tool
+// call. Warn-only by design: the server must still boot so the MCP handshake
+// succeeds and the client can read tool descriptions.
+warnIfApiKeyMissing();
 
 const server = createMcpServer();
 const transport = new StdioServerTransport();
