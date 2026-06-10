@@ -222,14 +222,23 @@ Each wrapped call:
    - **deny** → does **not** run; returns the gate reasons;
    - **pending** → (default `block` mode) polls `GET /approvals/:id` with backoff
      until approved/denied/expired or `approvalTimeoutMs` (default 120 s); on
-     approval it **re-verifies `params_hash`** before executing (TOCTOU defence),
-     then runs once. (`return` mode hands back the `approval_id` instead.)
+     approval it **re-verifies `params_hash`** AND **requires the approval to be
+     action-shaped** before executing (TOCTOU + cross-route defence), then runs
+     once. (`return` mode hands back the `approval_id` instead.)
 
-> **Approve via the ACTION route.** A paused action is approved/denied through
-> `POST /actions/approvals/:id/approve` (or `.../deny`) — **not** the payment
-> `/approvals/:id/approve` route, whose grant path attempts settlement. The
-> interceptor only polls `GET /approvals/:id` and instructs operators toward the
-> action route.
+> **Approve via the ACTION route — enforced, not just advised.** A paused action
+> is approved/denied through `POST /actions/approvals/:id/approve` (or `.../deny`)
+> — **not** the payment `/approvals/:id/approve` route, whose grant path attempts
+> settlement. The approval row is the **shared A5a store**, so a payment-route
+> approve still flips it to `APPROVED`; the interceptor therefore does **not**
+> trust a bare `decision === 'APPROVED'`. The payment approve route always runs
+> settlement and writes a `state` (`SETTLE_FAILED` / `RESUME_CONTEXT_UNAVAILABLE`
+> for an action); the action route never settles and writes no `state`. The
+> interceptor executes **only** when the approved row has **no settlement
+> `state`** — a present `state` is treated as a payment-route claim and the call
+> fails closed with `WRONG_APPROVAL_ROUTE` (handler never runs). This closes the
+> cross-route hazard where a human approving what they believe is a payment would
+> otherwise authorize an agent's irreversible action.
 
 ### Cost & lifetime
 

@@ -146,6 +146,40 @@ describe('[UNIT] GovernanceClient.getApproval', () => {
     expect(s.decided_by).toBe('op-1');
   });
 
+  it('should surface the payment-settlement state + error (AK-3-C1 discriminator)', async () => {
+    // The payment approve route writes state=SETTLE_FAILED on an action it grants.
+    const c = client(
+      jsonFetch(200, {
+        approval_id: 'apr_1',
+        decision: 'APPROVED',
+        decided_by: 'op-1',
+        state: 'SETTLE_FAILED',
+        error: 'RESUME_CONTEXT_UNAVAILABLE',
+      })
+    );
+    const s = await c.getApproval('apr_1');
+    expect(s.state).toBe('SETTLE_FAILED');
+    expect(s.settle_error).toBe('RESUME_CONTEXT_UNAVAILABLE');
+  });
+
+  it('should leave state absent for an action-route approval (no settlement)', async () => {
+    const c = client(
+      jsonFetch(200, { approval_id: 'apr_1', decision: 'APPROVED', decided_by: 'op-1' })
+    );
+    const s = await c.getApproval('apr_1');
+    expect(s.state).toBeUndefined();
+  });
+
+  it('[ADVERSARIAL] should fail closed by coercing an unexpected non-empty state to SETTLE_FAILED', async () => {
+    // A `state` we do not recognise still proves the payment lane ran ⇒ the
+    // interceptor must refuse. Coerce any non-empty string to SETTLE_FAILED.
+    const c = client(
+      jsonFetch(200, { approval_id: 'apr_1', decision: 'APPROVED', state: 'WEIRD_STATE' })
+    );
+    const s = await c.getApproval('apr_1');
+    expect(s.state).toBe('SETTLE_FAILED');
+  });
+
   it('[ADVERSARIAL] should throw ApprovalNotFoundError on 404', async () => {
     const c = client(jsonFetch(404, { error: 'NOT_FOUND' }));
     await expect(c.getApproval('apr_x')).rejects.toBeInstanceOf(ApprovalNotFoundError);

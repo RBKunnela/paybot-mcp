@@ -82,6 +82,22 @@ async function decide(
 }
 
 /**
+ * Approve a pending action via the PAYMENT approvals route (the WRONG route for
+ * an action — AK-3-C1). The payment grant path always attempts settlement; for
+ * an action there is no resume context, so the shared row is flipped to APPROVED
+ * with state=SETTLE_FAILED / RESUME_CONTEXT_UNAVAILABLE. Returns the HTTP body.
+ */
+async function approveViaPaymentRoute(approvalId: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`${CORE_URL}/approvals/${approvalId}/approve`, {
+    method: 'POST',
+    headers: { 'X-API-Key': API_KEY },
+  });
+  // The payment route returns 200 with state=SETTLE_FAILED even though it
+  // "approved" — that is precisely the cross-route hazard we are probing.
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/**
  * Poll the operator pending-list until an approval owned by `subject` appears.
  * The interceptor's govern POST races with the test's list call, so we retry.
  */
@@ -169,6 +185,73 @@ describe.skipIf(!CORE_URL)('[INTEGRATION] interceptor against live core (mock mo
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     });
     // Find the pending approval for this subject (retry past the govern race).
+    const approvalId = await waitForPending(subject);
+    await decide(approvalId, 'approve');
+
+    const res = await exec;
+    expect(runs()).toBe(1);
+    const text = res.content.map((c) => c.text).join('\n');
+    expect(text).toContain('RAN:');
+    expect(text).toMatch(/executed: params_hash=[a-f0-9]{64}, result_hash=[a-f0-9]{64}/);
+  });
+
+  it('[AK-3-C1] pending → approve via PAYMENT route ONLY → interceptor MUST NOT execute', async () => {
+    // The adversarial regression for AK-3-C1: an operator approves a paused
+    // irreversible ACTION via the PAYMENT route. The shared row flips to
+    // APPROVED (before settlement fails), but the interceptor must NOT treat
+    // that as authorization — a human approving what they believe is a payment
+    // must never execute an agent's irreversible action.
+    const { handler, runs } = spyHandler();
+    const subject = `it-wrongroute-${Date.now()}`;
+    const exec = governCall({
+      args: { database: 'prod-payment-poison' },
+      def: def('delete_database', 'irreversible', handler),
+      client: client(),
+      subjectRef: subject,
+      policy: POLICY,
+      pendingMode: 'block',
+      approvalTimeoutMs: 15000,
+      pollIntervalMs: 250,
+      failOpen: false,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    const approvalId = await waitForPending(subject);
+
+    // Approve through the WRONG (payment) route. Confirm the shared row really
+    // did flip to APPROVED with a settlement-failure state (the hazard surface).
+    const body = await approveViaPaymentRoute(approvalId);
+    expect(body.decision).toBe('APPROVED');
+    expect(body.state).toBe('SETTLE_FAILED');
+
+    const res = await exec;
+    // The core property: handler call count is ZERO on a payment-route approval.
+    expect(runs()).toBe(0);
+    expect(res.isError).toBe(true);
+    const text = res.content.map((c) => c.text).join('\n');
+    expect(text).toContain('WRONG_APPROVAL_ROUTE');
+    // And it never reached the handler / never bound an execution hash.
+    expect(text).not.toContain('RAN:');
+    expect(text).not.toMatch(/result_hash=/);
+  });
+
+  it('[AK-3-C1] a SEPARATE pending action approved via the ACTION route DOES execute', async () => {
+    // The positive half of the cross-route property: the action route IS the
+    // authorizing path. (A fresh approval — the payment-poisoned row above is
+    // already terminal and cannot be re-approved.)
+    const { handler, runs } = spyHandler();
+    const subject = `it-rightroute-${Date.now()}`;
+    const exec = governCall({
+      args: { database: 'analytics-staging' },
+      def: def('delete_database', 'irreversible', handler),
+      client: client(),
+      subjectRef: subject,
+      policy: POLICY,
+      pendingMode: 'block',
+      approvalTimeoutMs: 15000,
+      pollIntervalMs: 250,
+      failOpen: false,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
     const approvalId = await waitForPending(subject);
     await decide(approvalId, 'approve');
 

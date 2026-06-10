@@ -96,6 +96,28 @@ export interface GovernResult {
 /** Status of a paused action's approval, as reported by `GET /approvals/:id`. */
 export type ApprovalDecision = 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED';
 
+/**
+ * Post-approve settlement state machine, as surfaced by the SHARED A5a row.
+ *
+ * This field is the cross-route discriminator (AK-3-C1). The shared
+ * `pending_approvals` row is keyed only by `decision`; both the PAYMENT route
+ * (`POST /approvals/:id/approve`) and the ACTION route
+ * (`POST /actions/approvals/:id/approve`) flip a paused row to `APPROVED`. They
+ * differ in ONE observable way:
+ *  - The PAYMENT route ALWAYS runs the settlement state machine after granting,
+ *    so it ALWAYS writes a `state` (`SETTLED` for a real payment, or
+ *    `SETTLE_FAILED` / `RESUME_CONTEXT_UNAVAILABLE` when it grants what is
+ *    actually an ACTION — there is no payment resume context to settle).
+ *  - The ACTION route NEVER settles, so it NEVER writes a `state` (it stays
+ *    `null`/absent) — an action-shaped approval is `APPROVED` with NO `state`.
+ *
+ * The interceptor therefore treats a PRESENT `state` on an APPROVED row as proof
+ * the PAYMENT lane claimed it, and refuses to execute (fail-closed). Only an
+ * `APPROVED` row with NO `state` is an action-route approval that authorizes
+ * execution.
+ */
+export type ApprovalSettleState = 'SETTLED' | 'SETTLE_FAILED';
+
 /** Parsed response from `GET /approvals/:id`. */
 export interface ApprovalStatus {
   approval_id: string;
@@ -103,6 +125,14 @@ export interface ApprovalStatus {
   decided_by?: string;
   audit_hash?: string;
   expires_at?: string;
+  /**
+   * Payment-settlement state. PRESENT ⇒ the payment route claimed this row
+   * (cross-route hazard, AK-3-C1). ABSENT ⇒ action-route-shaped. See
+   * {@link ApprovalSettleState}.
+   */
+  state?: ApprovalSettleState;
+  /** Settlement error string (e.g. `RESUME_CONTEXT_UNAVAILABLE`) when present. */
+  settle_error?: string;
 }
 
 /**
@@ -270,12 +300,34 @@ export class GovernanceClient {
         `Malformed approval status: invalid decision (${String(decision)})`
       );
     }
+    // Cross-route discriminator (AK-3-C1): the shared A5a row only carries
+    // `state` when the PAYMENT settlement lane has touched it. The payment
+    // approve route ALWAYS writes a `state`; the action approve route NEVER
+    // does. We surface it verbatim so the interceptor can refuse a payment-route
+    // claim of an action. Any non-empty `state` string is treated as present
+    // (fail-closed: an unexpected value still means "payment lane ran").
+    const rawState = (body as { state?: unknown }).state;
+    const state =
+      rawState === 'SETTLED' || rawState === 'SETTLE_FAILED'
+        ? rawState
+        : typeof rawState === 'string' && rawState.length > 0
+          ? 'SETTLE_FAILED'
+          : undefined;
+    // The route maps the row's settle_error onto the `error` field.
+    const settleError = (body as { error?: unknown; settle_error?: unknown }).error;
+    const settleErrorAlt = (body as { settle_error?: unknown }).settle_error;
     return {
       approval_id: String((body as { approval_id?: unknown }).approval_id ?? approvalId),
       decision,
       decided_by: (body as { decided_by?: string }).decided_by,
       audit_hash: (body as { audit_hash?: string }).audit_hash,
       expires_at: (body as { expires_at?: string }).expires_at,
+      ...(state ? { state } : {}),
+      ...(typeof settleError === 'string'
+        ? { settle_error: settleError }
+        : typeof settleErrorAlt === 'string'
+          ? { settle_error: settleErrorAlt }
+          : {}),
     };
   }
 

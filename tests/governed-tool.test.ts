@@ -227,6 +227,97 @@ describe('[UNIT] governCall — AC2 pending → approve', () => {
   });
 });
 
+describe('[UNIT] governCall — AK-3-C1 cross-route approval gate', () => {
+  it('[ADVERSARIAL] APPROVED via the PAYMENT route (state=SETTLE_FAILED) ⇒ REFUSED, handler never runs', async () => {
+    // The shared A5a row was flipped to APPROVED by the PAYMENT approve route.
+    // That route always runs settlement, which can only fail for an action
+    // (no resume context) ⇒ state=SETTLE_FAILED / RESUME_CONTEXT_UNAVAILABLE.
+    // The interceptor must treat a present `state` as proof of a payment-route
+    // claim and refuse — a human approving a "payment" must NOT execute the action.
+    const { handler, calls } = makeHandler();
+    const client = fakeClient(
+      async () => ({ decision: 'pending', reasons: [], policy_level: 3, approval_id: 'apr_1' }),
+      async () => ({
+        approval_id: 'apr_1',
+        decision: 'APPROVED',
+        decided_by: 'op-1',
+        state: 'SETTLE_FAILED',
+        settle_error: 'RESUME_CONTEXT_UNAVAILABLE',
+      })
+    );
+    const res = await governCall({
+      args: { database: 'prod' },
+      def: makeDef('irreversible', handler),
+      client,
+      subjectRef: 'bot-1',
+      pendingMode: 'block',
+      approvalTimeoutMs: 1000,
+      pollIntervalMs: 1,
+      failOpen: false,
+      sleep: noSleep,
+    });
+    expect(calls).toHaveLength(0); // handler call count MUST be 0
+    expect(res.isError).toBe(true);
+    const text = res.content.map((c) => c.text).join('\n');
+    expect(text).toContain('WRONG_APPROVAL_ROUTE');
+    expect(text).toContain('RESUME_CONTEXT_UNAVAILABLE');
+  });
+
+  it('APPROVED via the ACTION route (no settlement state) ⇒ executes exactly once', async () => {
+    // An action-route approval never settles, so the shared row carries NO
+    // `state`. This is the only shape that authorizes execution.
+    const { handler, calls } = makeHandler();
+    const client = fakeClient(
+      async () => ({ decision: 'pending', reasons: [], policy_level: 3, approval_id: 'apr_1' }),
+      async () => ({ approval_id: 'apr_1', decision: 'APPROVED', decided_by: 'op-1' })
+    );
+    const res = await governCall({
+      args: { database: 'staging' },
+      def: makeDef('irreversible', handler),
+      client,
+      subjectRef: 'bot-1',
+      pendingMode: 'block',
+      approvalTimeoutMs: 1000,
+      pollIntervalMs: 1,
+      failOpen: false,
+      sleep: noSleep,
+    });
+    expect(calls).toHaveLength(1);
+    const text = res.content.map((c) => c.text).join('\n');
+    expect(text).toContain('HANDLER RAN');
+    expect(text).toContain('approved by op-1');
+  });
+
+  it('[ADVERSARIAL] APPROVED with state=SETTLED ⇒ REFUSED (any payment-settlement state fails closed)', async () => {
+    // Defence in depth: even a "successful" payment settlement on the shared id
+    // is not an action approval. Any present `state` ⇒ refuse.
+    const { handler, calls } = makeHandler();
+    const client = fakeClient(
+      async () => ({ decision: 'pending', reasons: [], policy_level: 3, approval_id: 'apr_1' }),
+      async () => ({
+        approval_id: 'apr_1',
+        decision: 'APPROVED',
+        decided_by: 'op-1',
+        state: 'SETTLED',
+      })
+    );
+    const res = await governCall({
+      args: { database: 'prod' },
+      def: makeDef('irreversible', handler),
+      client,
+      subjectRef: 'bot-1',
+      pendingMode: 'block',
+      approvalTimeoutMs: 1000,
+      pollIntervalMs: 1,
+      failOpen: false,
+      sleep: noSleep,
+    });
+    expect(calls).toHaveLength(0);
+    expect(res.isError).toBe(true);
+    expect(res.content.map((c) => c.text).join('\n')).toContain('WRONG_APPROVAL_ROUTE');
+  });
+});
+
 describe('[UNIT] governCall — AC3 deny / expiry / timeout', () => {
   it('should not execute when the operator DENIES', async () => {
     const { handler, calls } = makeHandler();
