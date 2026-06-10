@@ -6,13 +6,15 @@
     "url": "https://github.com/RBKunnela/paybot-mcp",
     "source": "github"
   },
-  "version": "0.3.3",
+  "version": "0.3.4",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "paybot-mcp",
-      "version": "0.3.3",
-      "transport": { "type": "stdio" },
+      "version": "0.3.4",
+      "transport": {
+        "type": "stdio"
+      },
       "environmentVariables": [
         {
           "description": "API key for authenticating with the PayBot facilitator",
