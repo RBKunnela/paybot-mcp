@@ -2,9 +2,75 @@
 
 - **Story:** AK-3 (EPIC-AP2-KERNEL-2026-06) · **PR:** #60 (paybot-mcp)
 - **Branch:** `feat/ak-3-mcp-interceptor`
-- **Reviewer:** @qa · **Mode:** 2-pass, re-executed; re-review after fix
+- **Reviewer:** @qa · **Mode:** 2-pass, re-executed; two re-reviews after fixes
 - **First-pass verdict (commit `b3d3756`):** CONCERNS
-- **Re-review verdict (commit `ef62534`):** **CONCERNS** — CONCERN-1 + CONCERN-2 RESOLVED; new **AK-3-C1** surfaced
+- **Re-review #1 verdict (commit `ef62534`):** CONCERNS — CONCERN-1 + CONCERN-2 RESOLVED; new AK-3-C1 surfaced
+- **Re-review #2 verdict (commit `478c6c9`):** **PASS** — AK-3-C1 RESOLVED; check #3 holds end-to-end
+
+---
+
+## RE-REVIEW #2 — 2026-06-10 (commit `478c6c9`) — **PASS**
+
+@dev closed AK-3-C1 interceptor-side (no `approvals.ts` edits). The blocking poll
+now refuses to execute unless the APPROVED row has **no** settlement `state`:
+the payment approve route always runs settlement and records a `state`
+(`SETTLE_FAILED`/`RESUME_CONTEXT_UNAVAILABLE` for an action row); the action
+approve route never settles, so `state` stays absent. Present `state` ⇒ payment
+lane claimed it ⇒ refuse `WRONG_APPROVAL_ROUTE` (fail-closed; any non-empty
+state, including `SETTLED`, coerced to refuse).
+
+### Check #3 — the property that withheld PASS — NOW HOLDS
+Re-ran the original attack live against AK-2 core (mock mode, port 3122, throwaway DB):
+pause irreversible `delete_database` → approve via the **PAYMENT** route only →
+**handler call count = 0**, refusal carries `WRONG_APPROVAL_ROUTE`, `isError`.
+Then a fresh action approved via the **ACTION** route executes exactly once with
+hashes bound. ✅
+
+### State-discriminator — sound (spot-checked both directions, live)
+- Pending action row: **no** `state` (decision PENDING).
+- Action-route approved: APPROVED with **no** `state` → executes once.
+- Payment-route approved: APPROVED with `state=SETTLE_FAILED` → refused.
+- Client coercion fail-closed: known states pass through; any other non-empty
+  string → treated as `SETTLE_FAILED` (refuse); only absent/empty → execute
+  (`governance-client.ts:309-315`). Verified against the live `GET /approvals/:id`
+  serialization (`paybot-ak2/src/server/routes/approvals.ts:448`,
+  `...(approval.state ? { state } : {})` — present only when settlement touched the row).
+
+### No regression (live + dead-core probes)
+TOCTOU (`PARAMS_HASH_MISMATCH`, 0 exec after mutation), deny-by-default
+(`VERB_ALLOWLIST`, 0 exec), reversible-only `failOpen` clamp (irreversible +
+failOpen + dead core ⇒ 0 exec, `GOVERNANCE_UNREACHABLE`, no `fail-open` note) all hold.
+
+### Test/quality results (commit `478c6c9`)
+| Check | Result |
+|---|---|
+| Suite without core | **126 passed / 7 skipped (133)** ✅ (+2 integration regressions, skipIf-gated) |
+| Suite with live AK-2 core | **133 passed / 0 skipped** ✅ |
+| Lint / type-check / build | green / green / green |
+| Coverage | governed-tool **95.83% lines / 85.93% branch**, governance-client **100% lines**, demo-tools **100%** — all ≥80% |
+| New AK-3-C1 tests | unit: payment `SETTLE_FAILED`→refused, action no-state→executes, `SETTLED`→refused; +3 client-parse; +unmocked integration (payment→0 exec, action→executes) — non-tautological |
+
+### Dev's flagged consequence — acceptable
+Payment-route approve poisons the shared id (→ action route returns 409
+ALREADY_DECIDED → operator must re-issue). This is **fail-closed-correct**: the
+action never executes (count 0), the refusal names `WRONG_APPROVAL_ROUTE` and
+tells the operator to re-approve via the ACTION route, and a re-issue is a fresh
+intent/approval that approves cleanly (verified). No silent failure, no execution. Acceptable.
+
+### Process note (NOT a blocker for AK-3; for the AK-2 owner)
+The AK-2 worktree (`D:\1.GITHUB\paybot-ak2`) carries **uncommitted** edits to
+`src/server/routes/actions.ts` (+ its test) adding a *parallel* AK-3-C1 fix — an
+action-scoped `GET /actions/approvals/:id` positive-signal endpoint. The shipped
+mcp interceptor (`478c6c9`) does **not** poll that endpoint; it polls the shared
+`GET /approvals/:id` and keys on `state` (served by the untouched `approvals.ts`).
+Confirmed by static analysis: `approvals.ts` is not in the AK-2 diff, and the
+diff is purely additive of a new route — so the check #3 PASS is attributable
+solely to the committed mcp fix, not the uncommitted endpoint. Left the AK-2
+worktree untouched (did not stash, per the do-not-modify boundary). Recommend the
+AK-2 owner either land or discard those uncommitted edits; they are dead relative
+to the shipped interceptor.
+
+### Re-review #2 verdict: **PASS**. Not merged.
 
 ---
 
