@@ -235,8 +235,6 @@ export function registerGovernedTool<Args extends Record<string, unknown>>(
   const approvalTimeoutMs = opts.approvalTimeoutMs ?? 120_000;
   const pollIntervalMs = opts.pollIntervalMs ?? 1000;
   const sleep = opts.sleep ?? realSleep;
-  // Reversible-only fail-open; an irreversible verb can never fail open.
-  const failOpen = opts.failOpen === true && def.riskClass === 'reversible';
 
   server.tool(def.name, def.description, def.schema, async (rawArgs: unknown) => {
     const args = (rawArgs ?? {}) as Args;
@@ -249,7 +247,9 @@ export function registerGovernedTool<Args extends Record<string, unknown>>(
       pendingMode,
       approvalTimeoutMs,
       pollIntervalMs,
-      failOpen,
+      // The reversible-only clamp lives in governCall itself (the public API
+      // boundary), so pass the caller's intent through unmodified.
+      failOpen: opts.failOpen,
       sleep,
     });
   });
@@ -265,7 +265,12 @@ interface GovernCallParams<Args extends Record<string, unknown>> {
   pendingMode: PendingMode;
   approvalTimeoutMs: number;
   pollIntervalMs: number;
-  failOpen: boolean;
+  /**
+   * Caller's fail-open request. Clamped to reversible-only INSIDE
+   * {@link governCall}: an irreversible (or any non-`'reversible'`) action can
+   * never fail open, regardless of what the caller passes. (AC4)
+   */
+  failOpen?: boolean;
   sleep: (ms: number) => Promise<void>;
 }
 
@@ -281,6 +286,13 @@ export async function governCall<Args extends Record<string, unknown>>(
   p: GovernCallParams<Args>
 ): Promise<ToolResult> {
   const { args, def, client } = p;
+  // Reversible-only fail-open clamp — enforced HERE, at the public-API entry,
+  // not just in the registrar wrapper. Any caller (including direct embedders
+  // of this exported primitive) that requests failOpen for a non-reversible
+  // verb is fail-CLOSED: an irreversible (or unknown/malformed risk_class)
+  // action can never execute while governance is unreachable. This makes the
+  // README's "ignored for irreversible verbs" guarantee hold at the boundary.
+  const failOpen = p.failOpen === true && def.riskClass === 'reversible';
   // Hash the exact arguments the handler would run with. This is the value
   // bound into the approval; it is re-derived and compared before execution.
   const paramsHash = hashActionParams(args);
@@ -302,8 +314,9 @@ export async function governCall<Args extends Record<string, unknown>>(
     });
   } catch (err: unknown) {
     if (err instanceof GovernanceUnreachableError) {
-      if (p.failOpen) {
-        // Reversible-only, opt-in, demo-only: documented in README.
+      if (failOpen) {
+        // Reversible-only, opt-in, demo-only: documented in README. `failOpen`
+        // is the clamped value — true only when the action is reversible.
         return runHandler(def, args, paramsHash, '(fail-open: governance unreachable)');
       }
       return governanceUnreachableResult(def.name, err.message);

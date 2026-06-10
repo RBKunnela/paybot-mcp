@@ -315,7 +315,7 @@ describe('[UNIT] governCall — AC4 fail closed', () => {
     expect(res.content[0].text).toContain('GOVERNANCE_UNREACHABLE');
   });
 
-  it('[ADVERSARIAL] failOpen is honored ONLY for reversible actions', async () => {
+  it('[ADVERSARIAL] reversible + failOpen + core unreachable ⇒ executes (opt-in escape hatch)', async () => {
     const { handler, calls } = makeHandler();
     const client = fakeClient(async () => {
       throw new GovernanceUnreachableError('core down');
@@ -333,6 +333,61 @@ describe('[UNIT] governCall — AC4 fail closed', () => {
     });
     expect(calls).toHaveLength(1);
     expect(res.content.map((c) => c.text).join('\n')).toContain('fail-open');
+  });
+
+  it('[ADVERSARIAL] irreversible + failOpen + core unreachable ⇒ REFUSED, handler never runs (public-API clamp)', async () => {
+    // This is the gap CONCERN-1 flagged: a direct embedder of the exported
+    // governCall passing failOpen for an IRREVERSIBLE verb must NOT bypass
+    // governance. The clamp lives in governCall itself, so failOpen is ignored
+    // and the action fails closed.
+    const { handler, calls } = makeHandler();
+    const client = fakeClient(async () => {
+      throw new GovernanceUnreachableError('core down');
+    });
+    const res = await governCall({
+      args: { database: 'x' },
+      def: makeDef('irreversible', handler),
+      client,
+      subjectRef: 'bot-1',
+      pendingMode: 'block',
+      approvalTimeoutMs: 1000,
+      pollIntervalMs: 1,
+      failOpen: true, // irreversible + opt-in ⇒ MUST be ignored (fail closed)
+      sleep: noSleep,
+    });
+    expect(calls).toHaveLength(0); // handler never executed
+    expect(res.isError).toBe(true);
+    const text = res.content.map((c) => c.text).join('\n');
+    expect(text).toContain('GOVERNANCE_UNREACHABLE');
+    expect(text).not.toContain('fail-open');
+  });
+
+  it('[ADVERSARIAL] unknown/malformed risk_class + failOpen + core unreachable ⇒ REFUSED (clamp is reversible-only, not "not-irreversible")', async () => {
+    // Defence in depth: the clamp keys on riskClass === 'reversible', so a
+    // caller smuggling an out-of-band risk_class through the (type-erased)
+    // public boundary still fails closed — failOpen is honored ONLY for an
+    // explicitly reversible action.
+    const { handler, calls } = makeHandler();
+    const client = fakeClient(async () => {
+      throw new GovernanceUnreachableError('core down');
+    });
+    const def = makeDef('reversible', handler);
+    // Force an out-of-enum value past the compiler to simulate a hostile embedder.
+    (def as { riskClass: string }).riskClass = 'unknown';
+    const res = await governCall({
+      args: { database: 'x' },
+      def,
+      client,
+      subjectRef: 'bot-1',
+      pendingMode: 'block',
+      approvalTimeoutMs: 1000,
+      pollIntervalMs: 1,
+      failOpen: true, // unknown risk + opt-in ⇒ MUST be ignored (fail closed)
+      sleep: noSleep,
+    });
+    expect(calls).toHaveLength(0); // handler never executed
+    expect(res.isError).toBe(true);
+    expect(res.content.map((c) => c.text).join('\n')).toContain('GOVERNANCE_UNREACHABLE');
   });
 
   it('should fail closed when a pending decision lacks an approval id', async () => {
