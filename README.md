@@ -8,6 +8,25 @@ MCP server for [PayBot](https://paybotcore.com) — payment tools for AI agents 
 npm install paybot-mcp paybot-sdk
 ```
 
+## Get your API key
+
+`PAYBOT_API_KEY` is required — without it every tool call fails with a 401. The fastest way to get a key is one `PayBotClient.signup()` call (from `paybot-sdk`) against the hosted facilitator at `https://api.paybotcore.com`:
+
+```bash
+node -e "import('paybot-sdk').then(async ({ PayBotClient }) => {
+  const a = await PayBotClient.signup('you@example.com', 'a-strong-password', { botId: 'my-agent' });
+  console.log(a.apiKey); // pb_live_... — printed ONLY once, save it now
+})"
+```
+
+This single call registers your operator account, creates the API key, **and registers the bot** (`botId`). Put the printed key into `PAYBOT_API_KEY` in the MCP config below, and reuse the same bot id as `PAYBOT_BOT_ID`.
+
+Notes:
+
+- The key is printed **only once** — store it securely; it cannot be retrieved later.
+- Because `signup()` already registered your bot, calling the `paybot_register` tool with the same bot id returns `409 ALREADY_EXISTS`. Use `paybot_register` only for **additional** bots.
+- Full auth flow (login, extra API keys, self-hosted facilitators): see the [paybot-sdk README → Get your API key](https://github.com/RBKunnela/paybot-sdk#get-your-api-key).
+
 ## Usage with Claude Desktop
 
 Add to `claude_desktop_config.json`:
@@ -49,10 +68,12 @@ Add to `claude_desktop_config.json`:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PAYBOT_API_KEY` | PayBot API key | (required) |
+| `PAYBOT_API_KEY` | PayBot API key (see [Get your API key](#get-your-api-key)) | (required) |
 | `PAYBOT_FACILITATOR_URL` | Facilitator server URL | `https://api.paybotcore.com` |
 | `PAYBOT_BOT_ID` | Default bot identifier | `mcp-agent` |
 | `PAYBOT_WALLET_KEY` | Wallet private key for real payments | (optional) |
+
+If `PAYBOT_API_KEY` is unset or empty, the server still boots (so the MCP handshake succeeds) but prints a warning to stderr at startup, and every tool call will fail with an authentication error until a key is configured. Omitting `PAYBOT_WALLET_KEY` keeps the underlying SDK in mock mode (no on-chain settlement).
 
 ## Available Tools
 
