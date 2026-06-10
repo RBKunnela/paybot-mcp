@@ -70,7 +70,22 @@ worktree untouched (did not stash, per the do-not-modify boundary). Recommend th
 AK-2 owner either land or discard those uncommitted edits; they are dead relative
 to the shipped interceptor.
 
-### Re-review #2 verdict: **PASS**. Not merged.
+### Scope of this PASS (commit pinned)
+This PASS is pinned to **committed `478c6c9`** (the shared-`/approvals/:id` +
+`state`-discriminator fix). Verification ran 16:58–17:01; the `dist/` under test
+(built 16:59) and the vitest source transform both reflected `478c6c9`. After
+verification (working-tree edits at 17:11, AFTER all runs), the dev continued
+iterating in the mcp working tree — **uncommitted** edits to
+`src/governance-client.ts` + `src/governed-tool.ts` switch the interceptor to
+poll the action-scoped `GET /actions/approvals/:id` positive signal (pairing with
+the uncommitted AK-2 endpoint). Those edits are NOT part of the reviewed commit,
+are NOT staged or pushed (the pushed branch HEAD is `478c6c9` + this docs commit
+only), and were left in place (in-progress work). If the dev commits the
+action-scoped approach, it warrants a quick re-review — but it is a strictly
+stronger design (a positive ACTION_APPROVED signal vs inferring from a settlement
+failure state), so the security property would only harden.
+
+### Re-review #2 verdict: **PASS** (pinned to `478c6c9`). Not merged.
 
 ---
 
