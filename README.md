@@ -72,6 +72,7 @@ Add to `claude_desktop_config.json`:
 | `PAYBOT_FACILITATOR_URL` | Facilitator server URL | `https://api.paybotcore.com` |
 | `PAYBOT_BOT_ID` | Default bot identifier | `mcp-agent` |
 | `PAYBOT_WALLET_KEY` | Wallet private key for real payments | (optional) |
+| `PAYBOT_ENABLE_DEMO_TOOLS` | Register the governed mock demo tools (`delete_database`, `annotate_record`). Must be exactly `true`. | `false` (off) |
 
 If `PAYBOT_API_KEY` is unset or empty, the server still boots (so the MCP handshake succeeds) but prints a warning to stderr at startup, and every tool call will fail with an authentication error until a key is configured. Omitting `PAYBOT_WALLET_KEY` keeps the underlying SDK in mock mode (no on-chain settlement).
 
@@ -197,6 +198,78 @@ in-memory; the facilitator remains the authoritative limit.
 | Param | Type | Notes |
 |-------|------|-------|
 | `poolId` | string | Pool identifier |
+
+## Governed tools (decide-before / prove-after)
+
+PayBot MCP can wrap **any** tool — not just payments — so a dangerous call must
+pass policy before it runs, an irreversible call pauses for a named human's
+approval, and every outcome leaves a tamper-evident, replayable trace in core's
+audit chain. This is the kill-switch + black-box-recorder for MCP tool calls.
+
+### How it works
+
+`registerGovernedTool(server, def, client, opts)` is a higher-order registrar.
+Each wrapped call:
+
+1. builds an **ActionIntent** — `verb` = tool name, `target_ref` = a
+   registrar-provided extractor over the args (opaque, never raw PII),
+   `params_hash` = SHA-256 of the canonical (key-sorted) JSON of the args,
+   `actor.subject_ref` = the configured bot id, `channel: 'mcp'`;
+2. calls core `POST /actions/govern`;
+3. acts on the verdict:
+   - **allow** → runs the tool, and appends `executed: params_hash=…,
+     result_hash=…` to the output so the trace binds intent → execution;
+   - **deny** → does **not** run; returns the gate reasons;
+   - **pending** → (default `block` mode) polls `GET /approvals/:id` with backoff
+     until approved/denied/expired or `approvalTimeoutMs` (default 120 s); on
+     approval it **re-verifies `params_hash`** before executing (TOCTOU defence),
+     then runs once. (`return` mode hands back the `approval_id` instead.)
+
+> **Approve via the ACTION route.** A paused action is approved/denied through
+> `POST /actions/approvals/:id/approve` (or `.../deny`) — **not** the payment
+> `/approvals/:id/approve` route, whose grant path attempts settlement. The
+> interceptor only polls `GET /approvals/:id` and instructs operators toward the
+> action route.
+
+### Cost & lifetime
+
+Governance adds **one network round-trip per governed call** (`/actions/govern`).
+A `pending` action in `block` mode holds open only as long as the **stdio session
+lives** — MCP stdio servers are single-session, so a session that ends drops a
+blocking wait. Operators drive approval from a second terminal (curl/dashboard),
+exactly like the HITL payment demo.
+
+### Security properties
+
+- **Fail closed.** If governance is unreachable (network error, timeout, 5xx,
+  malformed body) an irreversible or unknown action is **refused**
+  (`GOVERNANCE_UNREACHABLE`) — an unreachable governor never silently allows.
+  A `reversible` tool MAY set `failOpen: true` (demo-only convenience; ignored
+  for irreversible verbs).
+- **Risk class is set by the registrar (operator code), never by the model.** An
+  agent cannot self-declare its destructive tool "reversible."
+- **No raw args leave the process.** Only the `params_hash` and the extractor's
+  `target_ref` are sent to core; raw arguments (connection strings, PII) stay
+  local.
+- **No bypass.** Governance is applied at registration. A server that registers
+  a raw tool is ungoverned by definition — we govern what is wrapped, and make
+  no claim to intercept everything.
+
+### Demo tools (off by default)
+
+Set `PAYBOT_ENABLE_DEMO_TOOLS=true` to register two **mock** governed tools:
+
+| Tool | Risk class | Effect |
+|------|-----------|--------|
+| `delete_database` | irreversible | **MOCK** — touches nothing; pauses for human approval, then returns a labelled mock confirmation |
+| `annotate_record` | reversible | **MOCK** — proves the allow path; flows straight through |
+
+A published MCP server must not advertise a `delete_database` tool to every
+agent, so these stay off unless the flag is explicitly `true`.
+
+See [`docs/runbooks/governed-action-demo.md`](docs/runbooks/governed-action-demo.md)
+for the exact recorded-demo script (govern → pending → approve → mock execute →
+replayable audit proof).
 
 ## Programmatic Usage
 

@@ -13,6 +13,7 @@ import {
 } from 'paybot-sdk';
 import type { TrustLevel, LimitsConfig, CommissionLedgerFilter } from 'paybot-sdk';
 import { formatDenial } from './denial-guidance.js';
+import { demoToolsEnabled, registerDemoTools } from './demo-tools.js';
 
 /**
  * Single source of truth for the served version.
@@ -622,6 +623,15 @@ export function createMcpServer(): McpServer {
       };
     }
   );
+
+  // --- Governed demo tools (AK-3) ---
+  // Additive and OFF by default. Only when PAYBOT_ENABLE_DEMO_TOOLS=true does
+  // the server advertise the governed `delete_database` / `annotate_record`
+  // mock tools, which route every call through core's /actions/govern gate
+  // before execution. Payment tools above are entirely unaffected.
+  if (demoToolsEnabled()) {
+    registerDemoTools(server);
+  }
 
   return server;
 }
