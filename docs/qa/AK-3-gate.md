@@ -2,10 +2,79 @@
 
 - **Story:** AK-3 (EPIC-AP2-KERNEL-2026-06) · **PR:** #60 (paybot-mcp)
 - **Branch:** `feat/ak-3-mcp-interceptor`
-- **Reviewer:** @qa · **Mode:** 2-pass, re-executed; two re-reviews after fixes
+- **Reviewer:** @qa · **Mode:** 2-pass, re-executed; three re-reviews after fixes
 - **First-pass verdict (commit `b3d3756`):** CONCERNS
 - **Re-review #1 verdict (commit `ef62534`):** CONCERNS — CONCERN-1 + CONCERN-2 RESOLVED; new AK-3-C1 surfaced
-- **Re-review #2 verdict (commit `478c6c9`):** **PASS** — AK-3-C1 RESOLVED; check #3 holds end-to-end
+- **Re-review #2 verdict (commit `478c6c9`):** PASS — AK-3-C1 RESOLVED via negative `state`-discriminator (SUPERSEDED, see below)
+- **Re-review #3 verdict (commit `1bb1517`):** **PASS** — AK-3-C1 re-closed via POSITIVE action-scoped signal; **this PASS is now the active pin**, superseding the `478c6c9` pin
+
+---
+
+## RE-REVIEW #3 — 2026-06-10 (commit `1bb1517`) — **PASS** (active pin; supersedes `478c6c9`)
+
+Spans two branches. The interceptor was rewritten to gate execution on a
+**POSITIVE action-scoped signal** instead of the prior negative settlement-`state`
+inference. The paired core endpoint landed on AK-2 PR #104 (commit `c2cafa5`,
+`GET /actions/approvals/:id`). Both branches re-verified from their worktrees.
+
+### What changed since `478c6c9` (the design hardening)
+- **Removed** the negative state-discriminator (`if (status.state !== undefined) → REFUSE WRONG_APPROVAL_ROUTE`).
+- **Added** `GovernanceClient.getActionApproval()` polling `GET /actions/approvals/:id`
+  (`governance-client.ts:377`); `pollAndExecute` now polls that endpoint and
+  executes ONLY on `decision === 'APPROVED'` (`governed-tool.ts:432,450`) after the
+  TOCTOU re-hash. The old `getApprovalStatus()` (`/approvals/:id`) is retained ONLY
+  as an operator/debug view — **not used in the execute path** (grep confirms zero
+  references in `governed-tool.ts`).
+
+### Check #3 — the property — RE-VERIFIED LIVE (now via positive signal)
+Booted AK-2 core from its worktree (`paybot-ak2`, `c2cafa5`) in mock mode on a free
+port with a throwaway DB. Ran the unmocked integration suite against it:
+- **`[AK-3-C1]` payment-route approve ONLY** → shared row flips `APPROVED`/`SETTLE_FAILED`,
+  but `GET /actions/approvals/:id` stays **PENDING** → interceptor polls, never sees
+  APPROVED, **times out** → **handler call count = 0**, `APPROVAL_TIMEOUT`, `isError`,
+  never `RAN:`, no `result_hash`. ✅
+- **`[AK-3-C1]` action-route approve** (separate fresh approval) → action-scoped status
+  APPROVED → **executes exactly once**, `params_hash` + `result_hash` bound. ✅
+- Confirmed the interceptor polls the **action-scoped** endpoint, not `/approvals/:id`,
+  for the execute decision (static + the integration assertion reads
+  `GET /actions/approvals/:id` directly and asserts PENDING under payment-route approve).
+
+### Soundness vs the old fix (positive signal, no residual gap)
+- NEW approach is a **positive** signal: execution requires `ACTION_APPROVED`-backed
+  `decision === 'APPROVED'` on the action-scoped endpoint — not an inference from the
+  absence of a settlement state. Strictly stronger: nothing is read from the payment lane.
+- Removing the state-discriminator left **no gap**: there is no path where a payment-route
+  approve yields action-scoped APPROVED. The action registry's `recordDecision('APPROVED')`
+  is called ONLY by `POST /actions/approvals/:id/approve` (the `ACTION_APPROVED` emitter);
+  the payment approve route (`approvals.ts`) has **zero** references to the registry
+  (grep confirmed). **Live-proven both directions** against the running core:
+  payment-route approve → action status PENDING; action-route approve → APPROVED;
+  action-route deny → DENIED; unknown id → 404 (fail-closed, never falsy-APPROVED);
+  unauthenticated → 401.
+
+### No regression (unit, dead-core + live)
+TOCTOU `PARAMS_HASH_MISMATCH` (0 exec after mutation), deny-by-default `VERB_ALLOWLIST`
+(0 exec), irreversible + core-unreachable (0 exec), reversible-only `failOpen` clamp
+(irreversible + failOpen + dead core ⇒ 0 exec, `GOVERNANCE_UNREACHABLE`, no `fail-open`),
+malformed-risk_class clamp (fail-closed) — all hold.
+
+### Test/quality results (commit `1bb1517`)
+| Check | Result |
+|---|---|
+| Suite without core | **132 passed / 7 skipped (139)** ✅ (integration `skipIf`-gated) |
+| Suite with live AK-2 core (`c2cafa5`, mock mode, free port, throwaway DB) | **139 passed / 0 skipped** ✅ |
+| Lint / type-check / build | green / green / green |
+| Coverage (changed files, with core) | governance-client **100% lines / 90.66% branch**, governed-tool **95.83% lines / 83.87% branch**, demo-tools **100%** — all ≥80% |
+| Check #3 handler count | payment-route approve = **0**; action-route approve = **1** |
+
+### Cross-repo note (AK-2 PR #104, `c2cafa5`)
+The paired core endpoint is now **committed** on AK-2 (no longer the dead/uncommitted
+edits flagged in re-review #2). `src/server/routes/approvals.ts` is **untouched**
+(empty diff vs `origin/main`); the AK-2 diff is additive. AK-2 #104 re-gated and
+still PASSES with `c2cafa5` (see `paybot-ak2` AK-2 gate re-gate note). The
+re-review #2 "uncommitted/dead" process note is therefore resolved.
+
+### Re-review #3 verdict: **PASS** (active pin = `1bb1517`; supersedes `478c6c9`). Not merged.
 
 ---
 
