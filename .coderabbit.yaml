@@ -1,19 +1,24 @@
-# CodeRabbit Configuration for PayBot MCP
-language: en
+# CodeRabbit DISABLED — Chefe 1792 (2026-08-07)
+# Own review path: George + CI + Sentinel dogfood + LLM-Hub (no third-party review quotas)
+# To re-enable: restore from .coderabbit.yaml.bak-pre-disable-1792 and reinstall GitHub App if removed.
+
+language: en-US
+
 reviews:
-  profile: assertive
+  profile: chill
+  disable_proposed_changes: true
   auto_review:
-    enabled: true
+    enabled: false
     drafts: false
-    ignore_usernames: []   # review all authors, including dependabot/renovate bots
-  path_instructions:
-    - path: "src/**"
-      instructions: |
-        MCP server exposing PayBot payment tools to AI agents.
-        Pay attention to:
-        - Tool input validation (schemas) and safe argument handling
-        - Credential/secret handling (X-API-Key, wallet keys) — never log or leak secrets
-        - Correct facilitator API usage (api.paybotcore.com) and error propagation
-        - Graceful, safe failure on facilitator/network errors
+    base_branches: []
+  request_changes_workflow: false
+  high_level_summary: false
+  review_status: false
+  poem: false
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  changed_files_summary: false
+
+# Chat also off when possible
 chat:
-  auto_reply: true
+  auto_reply: false
