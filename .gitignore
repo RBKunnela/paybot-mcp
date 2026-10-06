@@ -44,3 +44,21 @@ docs/stories/BP-3.1/*
 .aios-core/
 .aiox-core/
 
+
+# === Secret material — added before public release (Chefe 321) ===
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+secrets/
+secrets.json
+credentials.json
+credentials/
+.netrc
+.npmrc
+service-account*.json
+gcp-key*.json
+.envrc
+.direnv/
